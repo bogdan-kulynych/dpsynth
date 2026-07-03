@@ -14,10 +14,11 @@ critical **utility provider** for the rest of the project.
 
 ### 1. Local Mechanism Execution
 
-This directory provides the "brains" for local, in-memory data synthesis. The
-primary entry point is `run_mechanism` (in [api.py](api.py)), which orchestrates
-specific algorithms (AIM, MST, etc.) on single-machine datasets (typically
-loaded via Pandas or NumPy).
+This directory provides the algorithmic "brains" for local, in-memory data synthesis.
+
+Historically, this was orchestrated via a single functional entry point. Under the current architecture, mechanisms are object-oriented and designed to be injected into the high-level `dpsynth.TabularSynthesizer`.
+
+Users instantiate specific algorithm configurations (e.g., `AIMConfig()`, `MSTConfig()`) or directly utilize the mechanism classes (e.g., `MSTMechanism`). The synthesizer's `calibrate()` method then orchestrates the execution of these algorithms over
 
 ### 2. Common Utility Provider
 
