@@ -18,7 +18,7 @@ This directory provides the algorithmic "brains" for local, in-memory data synth
 
 Historically, this was orchestrated via a single functional entry point. Under the current architecture, mechanisms are object-oriented and designed to be injected into the high-level `dpsynth.TabularSynthesizer`.
 
-Users instantiate specific algorithm configurations (e.g., `AIMConfig()`, `MSTConfig()`) or directly utilize the mechanism classes (e.g., `MSTMechanism`). The synthesizer's `calibrate()` method then orchestrates the execution of these algorithms over
+Users instantiate specific algorithm configurations (e.g., `AIMConfig()`, `MSTConfig()`) or directly utilize the mechanism classes (e.g., `MSTMechanism`). The synthesizer's `calibrate()` method then orchestrates the execution of these algorithms over single-machine datasets (typically loaded via Pandas).
 
 ### 2. Common Utility Provider
 
@@ -45,7 +45,7 @@ The [accounting.py](accounting.py) module handles the translation layer between 
 
 - **Approximate DP to zCDP:** Translates high-level user parameters $(\epsilon, \delta)$ into a total zero-Concentrated Differential Privacy budget ($\rho$) using `zcdp_rho`.
 
-* **Budget Composition & Allocations:** Tracks privacy expenditure across iterative exacution rounds (e.g., inside [aim.py](aim.py)), converting a round's allocated budget (`rho_per_round`) directly into a standard deviation ($\sigma$) via `zcdp_gaussian_sigma` where $\rho = \frac{0.5}{\sigma^2}$.
+* **Budget Composition & Allocations:** Tracks privacy expenditure across iterative execution rounds (e.g., inside [aim.py](aim.py)), converting a round's allocated budget (`rho_per_round`) directly into a standard deviation ($\sigma$) via `zcdp_gaussian_sigma` where $\rho = \frac{0.5}{\sigma^2}$.
 
 * **Alternative Accounting Frameworks:** Provides direct calculation layers for Gaussian Differential Privacy ($\mu$-GDP via `aim_gdp.py` and `gdp_gaussian_sigma`) and parameter mapping bounds for the Exponential mechanism (`zcdp_exponential_eps`).
 
