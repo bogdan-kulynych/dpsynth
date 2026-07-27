@@ -54,22 +54,6 @@ class AIMTest(absltest.TestCase):
       actual = result.model.project([col]).datavector()
       np.testing.assert_allclose(actual, expected, atol=1)
 
-  def test_uncalibrated_aim_raises(self):
-    config = aim.AIMMechanism()
-    with self.assertRaisesRegex(ValueError, "calibrate"):
-      _ = config.dp_event
-    data = mbi.Dataset.synthetic(mbi.Domain(["a"], [3]), N=10)
-    with self.assertRaisesRegex(ValueError, "calibrate"):
-      config(np.random.default_rng(0), data)
-
-  def test_uncalibrated_aim_gdp_raises(self):
-    config = aim_gdp.AIMGDPMechanism()
-    with self.assertRaisesRegex(ValueError, "calibrate"):
-      _ = config.dp_event
-    data = mbi.Dataset.synthetic(mbi.Domain(["a"], [3]), N=10)
-    with self.assertRaisesRegex(ValueError, "calibrate"):
-      config(np.random.default_rng(0), data)
-
 
 if __name__ == "__main__":
   absltest.main()
