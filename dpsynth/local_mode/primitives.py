@@ -407,11 +407,16 @@ class DPGaussianCount(DPMechanism):
       raise ValueError(_UNCALIBRATED_MSG.format(param='sigma'))
     return dp_accounting.GaussianDpEvent(noise_multiplier=self.sigma)
 
-  def __call__(self, rng: np.random.Generator, data: np.ndarray) -> float:
-    """Returns a noisy count of len(data) + Gaussian noise."""
+  def noisy_count(self, rng: np.random.Generator, true_count: int) -> float:
+    """Returns ``true_count`` plus calibrated Gaussian noise."""
     if self.sigma is None:
       raise ValueError(_UNCALIBRATED_MSG.format(param='sigma'))
-    return float(len(data) + rng.normal(scale=self.sigma))
+    return float(true_count + rng.normal(scale=self.sigma))
+
+  def __call__(self, rng: np.random.Generator, data: np.ndarray) -> float:
+    """Returns a noisy count of len(data) + Gaussian noise."""
+    # Delegate to noisy_count so there is a single noise implementation.
+    return self.noisy_count(rng, len(data))
 
 
 @dataclasses.dataclass

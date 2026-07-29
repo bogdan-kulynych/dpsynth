@@ -72,16 +72,99 @@ def _create_initializers(
   return initializers
 
 
-def _build_mbi_domain(
-    results: Mapping[str, initialization.ColumnMeasurement],
-) -> mbi.Domain:
-  """Builds an mbi.Domain with labels from per-column measurement results."""
-  attrs = tuple(results.keys())
-  shape = tuple(r.categorical_attribute.size for r in results.values())
-  labels = tuple(
-      tuple(r.categorical_attribute.possible_values) for r in results.values()
-  )
-  return mbi.Domain(attributes=attrs, shape=shape, labels=labels)
+@dataclasses.dataclass(frozen=True)
+class ColumnCodec:
+  """Maps one column between raw values and discrete ids, and back.
+
+  Attributes:
+    column_measurement: Per-column initialization result defining the discrete
+      domain (and bin edges for numerical columns).
+    attribute: The original attribute spec; only numerical (un)discretization
+      uses it, for the value range.
+  """
+
+  column_measurement: initialization.ColumnMeasurement
+  attribute: domain.AttributeType
+
+  def encode(self, values: np.ndarray) -> np.ndarray:
+    """Encodes raw column values to discrete integer ids."""
+    if self.column_measurement.bin_edges is not None:
+      return vtx.discretize(
+          values, self.column_measurement.bin_edges, self.attribute
+      )
+    return vtx.discrete_encode(
+        values, self.column_measurement.categorical_attribute
+    )
+
+  def decode(self, ids: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Decodes synthetic discrete ids back to the original domain."""
+    if self.column_measurement.bin_edges is not None:
+      return vtx.undiscretize(
+          ids, self.column_measurement.bin_edges, self.attribute, rng=rng
+      )
+    return vtx.discrete_decode(
+        ids, self.column_measurement.categorical_attribute
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class TabularCodec:
+  """Encodes a table to the discrete domain and decodes synthetic output back.
+
+  Attributes:
+    columns: Per-column codecs, keyed by column name.
+  """
+
+  columns: Mapping[str, ColumnCodec]
+
+  @classmethod
+  def from_measurements(
+      cls,
+      results: Mapping[str, initialization.ColumnMeasurement],
+      domains: Mapping[str, domain.AttributeType],
+  ) -> TabularCodec:
+    """Builds a codec from initialization results and the original domains."""
+    columns = {col: ColumnCodec(m, domains[col]) for col, m in results.items()}
+    return cls(columns=columns)
+
+  @property
+  def mbi_domain(self) -> mbi.Domain:
+    """The discrete mbi.Domain induced by the per-column categorical attributes."""
+    cats = {
+        col: c.column_measurement.categorical_attribute
+        for col, c in self.columns.items()
+    }
+    return mbi.Domain(
+        attributes=tuple(cats.keys()),
+        shape=tuple(a.size for a in cats.values()),
+        labels=tuple(tuple(a.possible_values) for a in cats.values()),
+    )
+
+  def one_way_measurements(self) -> list[mbi.LinearMeasurement]:
+    """Returns the non-None one-way marginal measurements, in column order."""
+    return [
+        c.column_measurement.measurement
+        for c in self.columns.values()
+        if c.column_measurement.measurement is not None
+    ]
+
+  def encode(self, data: pd.DataFrame) -> mbi.Dataset:
+    """Encodes ``data`` into an mbi.Dataset over the discrete domain."""
+    discrete = {
+        col: c.encode(data[col].values) for col, c in self.columns.items()
+    }
+    return mbi.Dataset(discrete, self.mbi_domain)
+
+  def decode(
+      self,
+      synthetic: mbi.Dataset,
+      rng: np.random.Generator,
+      column_order: Sequence[str],
+  ) -> pd.DataFrame:
+    """Decodes synthetic discrete data back to a DataFrame."""
+    ids = synthetic.to_dict()
+    decoded = {col: c.decode(ids[col], rng) for col, c in self.columns.items()}
+    return pd.DataFrame(decoded)[list(column_order)]
 
 
 @dataclasses.dataclass
@@ -268,26 +351,16 @@ class TabularSynthesizer(primitives.DPMechanism):
       else:
         results[col] = init(rng, data[col].values)
 
-    # Phase 2: Encode data to discrete domain.
-    discrete_data = {}
-    initial_measurements = [total_measurement]
-    for col, result in results.items():
-      if result.bin_edges is not None:
-        discrete_data[col] = vtx.discretize(
-            data[col].values, result.bin_edges, self.domains[col]
-        )
-      else:
-        discrete_data[col] = vtx.discrete_encode(
-            data[col].values, result.categorical_attribute
-        )
-      if result.measurement is not None:
-        initial_measurements.append(result.measurement)
-
-    mbi_domain = _build_mbi_domain(results)
-    discrete = mbi.Dataset(discrete_data, mbi_domain)
+    # Phase 2: Encode data to the discrete domain.
+    codec = TabularCodec.from_measurements(results, self.domains)
+    discrete = codec.encode(data)
     logging.info('[DPSynth]: Finished encoding data.')
 
-    # Phase 3: Run the discrete mechanism.
+    # Phase 3: Run the discrete mechanism and decode back to the input domain.
+    # Feed the noisy total (clique ()) and one-way column measurements as
+    # initial measurements so the mechanism does not re-measure them.
+    column_order = [col for col in data.columns if col in self.domains]
+    initial_measurements = [total_measurement, *codec.one_way_measurements()]
     mbi_constraints = tuple(
         c.to_mbi() for c in self.cross_attribute_constraints
     )
@@ -297,25 +370,14 @@ class TabularSynthesizer(primitives.DPMechanism):
         initial_measurements=initial_measurements,
         constraints=mbi_constraints,
     )
-    synthetic_data = mechanism_result.synthetic_data
     logging.info('[DPSynth]: Generated discrete synthetic data.')
 
-    # Phase 4: Decode synthetic data back to original domain.
-    synthetic_columns = {}
-    for col, result in results.items():
-      col_data = synthetic_data.to_dict()[col]
-      if result.bin_edges is not None:
-        synthetic_columns[col] = vtx.undiscretize(
-            col_data, result.bin_edges, self.domains[col], rng=rng
-        )
-      else:
-        synthetic_columns[col] = vtx.discrete_decode(
-            col_data, result.categorical_attribute
-        )
+    synthetic_data = codec.decode(
+        mechanism_result.synthetic_data, rng, column_order
+    )
     logging.info('[DPSynth]: Converted data back to original domain.')
 
-    column_order = [col for col in data.columns if col in self.domains]
     return DataGenerationResult(
-        synthetic_data=pd.DataFrame(synthetic_columns)[column_order],
+        synthetic_data=synthetic_data,
         discrete_mechanism_result=mechanism_result,
     )

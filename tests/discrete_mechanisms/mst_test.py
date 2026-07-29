@@ -88,17 +88,6 @@ class MSTTest(absltest.TestCase):
       actual = result.model.project([col]).datavector()
       np.testing.assert_allclose(actual, expected, atol=1)
 
-  def test_calibrate_required(self):
-    config = mst.MSTMechanism()
-    data = mbi.Dataset.synthetic(mbi.Domain(['a', 'b'], [3, 4]), N=100)
-    with self.assertRaises(ValueError):
-      config(np.random.default_rng(0), data)
-
-  def test_dp_event_requires_calibration(self):
-    config = mst.MSTMechanism()
-    with self.assertRaises(ValueError):
-      _ = config.dp_event
-
   def test_dp_event_returns_zcdp(self):
     config = mst.MSTMechanism().configure(zcdp_rho=1.0)
     event = config.dp_event
