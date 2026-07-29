@@ -48,12 +48,23 @@ However, it can be useful when:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import dataclasses
+import io
 import math
-from typing import Any
+import pickle
+import shutil
+import tempfile
+from typing import Any, cast
 
+from absl import logging
 import apache_beam as beam
+from apache_beam.io.filesystems import FileSystems
+import dp_accounting
+from dpsynth import data_generation_v3
 from dpsynth import domain
 from dpsynth.local_mode import initialization
+from dpsynth.local_mode import primitives
 import mbi
 import numpy as np
 
@@ -193,7 +204,7 @@ def _sparse_to_openset(sparse):
   return np.array(keys), np.array(vals, dtype=np.float64)
 
 
-# into the Beam pipeline, which can increase setup time for each worker.
+# mbi) into the Beam pipeline, which can increase setup time for each worker.
 def run_from_summary(
     sparse_stats: dict[str, list[tuple[Any, int]]],
     initializers: dict[str, Initializer],
@@ -228,51 +239,6 @@ def run_from_summary(
   return results
 
 
-# Stage 1 of the two-pass pipeline: privately learn each column's domain.
-# The raw data is too big for one machine, so Beam computes lightweight
-# per-column sufficient statistics (numerical histograms, categorical value
-# counts) in a distributed pass. These summaries are small, so we gather them
-# on the driver and run the DP mechanism there, producing each column's noised,
-# integer-encoded domain (a ColumnMeasurement) that stage 2 consumes.
-class BeamInitialize(beam.PTransform):
-  """End-to-end: computes sufficient stats and runs DP initialization.
-
-  Composes ``ComputeSufficientStats`` with sparse-to-dense conversion and
-  ``from_summary()`` calls. Produces a singleton ``PCollection`` containing
-  one ``dict[str, ColumnMeasurement]`` with all results.
-
-  Attributes:
-    initializers: Calibrated initializers keyed by column name.
-    rng: NumPy random generator for DP noise.
-  """
-
-  def __init__(
-      self,
-      initializers: dict[str, Initializer],
-      rng: np.random.Generator,
-  ):
-    super().__init__()
-    self._initializers = initializers
-    self._rng = rng
-
-  def expand(
-      self, rows: beam.PCollection[Row]
-  ) -> beam.PCollection[dict[str, initialization.ColumnMeasurement]]:
-    return (
-        rows
-        | 'Stats' >> ComputeSufficientStats(self._initializers)
-        | 'ToDict' >> beam.combiners.ToDict()
-        | 'Initialize'
-        # Since all sufficient stats have been computed and materialized on the
-        # driver, passing a single rng is fine here.
-        >> beam.Map(
-            run_from_summary,
-            initializers=self._initializers,
-            rng=self._rng,
-        )
-    )
-
-
 class _EncodeAndProject(beam.DoFn):
   """Integer-encodes each row and emits (clique_index, linear_index) pairs."""
 
@@ -283,8 +249,12 @@ class _EncodeAndProject(beam.DoFn):
       workload: list[mbi.Clique],
   ):
     super().__init__()
-    self._cms = column_measurements
-    self._domains = domains
+    # Reuse the shared per-column codec so Beam encoding matches the in-memory
+    # path exactly, for both numerical binning and categorical lookups.
+    self._codecs = {
+        col: data_generation_v3.ColumnCodec(cm, domains[col])
+        for col, cm in column_measurements.items()
+    }
     self._clique_meta: list[tuple[int, mbi.Clique, tuple[int, ...]]] = []
     for idx, clique in enumerate(workload):
       shape = tuple(
@@ -292,22 +262,14 @@ class _EncodeAndProject(beam.DoFn):
       )
       self._clique_meta.append((idx, clique, shape))
 
-  def _encode_value(self, col: str, raw_value: Any) -> int:
-    """Encodes a single raw value to an integer index."""
-    cm = self._cms[col]
-    if cm.bin_edges is not None:
-      attr = self._domains[col]
-      value = attr.standardize(raw_value)
-      if math.isnan(value):
-        return 0  # OOD bucket (clip_to_range=False).
-      offset = 0 if attr.clip_to_range else 1
-      return int(np.searchsorted(cm.bin_edges, value, side='left')) + offset
-    else:
-      cat = cm.categorical_attribute
-      return cat.lookup.get(str(raw_value), cat.out_of_domain_index)
-
   def process(self, row: Row):
-    encoded = {col: self._encode_value(col, row.get(col)) for col in self._cms}
+    # ColumnCodec.encode is vectorized, so wrap each scalar in a length-1 array.
+    encoded = {
+        col: int(codec.encode(np.asarray([row.get(col)]))[0])
+        for col, codec in self._codecs.items()
+    }
+    # supporting_cliques() never returns the 0-way clique (), so shape is always
+    # non-empty here and np.ravel_multi_index is safe.
     for clique_idx, clique_cols, shape in self._clique_meta:
       multi_index = tuple(encoded[c] for c in clique_cols)
       linear = int(np.ravel_multi_index(multi_index, shape))
@@ -329,19 +291,6 @@ def _assemble_dense_marginal(element, clique_meta, mbi_domain):
   for linear_idx, count in sparse_pairs:
     dense[linear_idx] = count
   return mbi.Factor(mbi_domain.project(clique_cols), dense.reshape(shape))
-
-
-def _build_mbi_domain(column_measurements):
-  """Builds an mbi.Domain from ColumnMeasurement results."""
-  attrs = tuple(column_measurements.keys())
-  shape = tuple(
-      r.categorical_attribute.size for r in column_measurements.values()
-  )
-  labels = tuple(
-      tuple(r.categorical_attribute.possible_values)
-      for r in column_measurements.values()
-  )
-  return mbi.Domain(attributes=attrs, shape=shape, labels=labels)
 
 
 # Stage 2 of the two-pass pipeline: compute the joint marginals the DP mechanism
@@ -374,7 +323,9 @@ class ComputeMarginals(beam.PTransform):
     self._column_measurements = column_measurements
     self._domains = domains
     self._workload = workload
-    self._mbi_domain = _build_mbi_domain(column_measurements)
+    self._mbi_domain = data_generation_v3.TabularCodec.from_measurements(
+        column_measurements, domains
+    ).mbi_domain
     self._clique_meta = []
     for idx, clique in enumerate(workload):
       shape = self._mbi_domain.project(clique).shape
@@ -408,4 +359,231 @@ class ComputeMarginals(beam.PTransform):
         )
         | 'ToList' >> beam.combiners.ToList()
         | 'BuildCliqueVector' >> beam.Map(_to_clique_vector)
+    )
+
+
+# End-to-end synthesis: the two Beam passes above learn each column's domain
+# (stage 1) and the joint marginals the mechanism needs (stage 2). The driver
+# then runs the discrete mechanism and decodes the synthetic output locally,
+# since the graphical model and sampling are small enough to fit in memory.
+
+
+def _write(value: Any, path: str) -> None:
+  """Serializes a driver-bound pipeline result to ``path``."""
+  # Writing to a (possibly distributed) filesystem lets the driver read the
+  # value back after the pipeline finishes, so it works on remote runners.
+  buf = io.BytesIO()
+  try:
+    mbi.save(value, buf)
+    data = buf.getvalue()
+  except TypeError:
+    data = pickle.dumps(value)
+  with FileSystems.create(path) as f:
+    f.write(data)
+
+
+def _read(path: str) -> Any:
+  """Reads a value written by ``_write`` on the driver."""
+  with FileSystems.open(path) as f:
+    raw = f.read()
+  if raw[:4] == b'PK\x03\x04':
+    return mbi.load(io.BytesIO(raw))
+  # Trusted input only: reads data this pipeline wrote to temp_location, which
+  # must therefore not point at an untrusted or world-writable path.
+  return pickle.loads(raw)  # pylint: disable=g-unsafe-pickle-load
+
+
+def generate_from_marginals(
+    synth: data_generation_v3.TabularSynthesizer,
+    rng: np.random.Generator,
+    column_measurements: dict[str, initialization.ColumnMeasurement],
+    marginals: mbi.CliqueVector,
+    total_measurement: mbi.LinearMeasurement,
+) -> data_generation_v3.DataGenerationResult:
+  """Runs the discrete mechanism and decoding from pre-computed marginals.
+
+  Args:
+    synth: A calibrated TabularSynthesizer.
+    rng: NumPy random generator for the discrete mechanism's DP noise.
+    column_measurements: Per-column results from pass 1 initialization.
+    marginals: The exact joint marginals computed by pass 2.
+    total_measurement: The DP-noised total-count measurement (clique ``()``).
+
+  Returns:
+    A DataGenerationResult containing the synthetic DataFrame.
+  """
+  # Emit columns in domain-declaration order for deterministic output.
+  column_order = [c for c in synth.domains if c in column_measurements]
+  codec = data_generation_v3.TabularCodec.from_measurements(
+      column_measurements, synth.domains
+  )
+
+  initial_measurements = [total_measurement, *codec.one_way_measurements()]
+  mbi_constraints = tuple(c.to_mbi() for c in synth.cross_attribute_constraints)
+  logging.info('[DPSynth/Beam]: Running discrete mechanism.')
+  mechanism_result = synth.discrete_mechanism(
+      rng,
+      data=marginals,
+      initial_measurements=initial_measurements,
+      constraints=mbi_constraints,
+  )
+  synthetic_data = codec.decode(
+      mechanism_result.synthetic_data, rng, column_order
+  )
+  return data_generation_v3.DataGenerationResult(
+      synthetic_data=synthetic_data,
+      discrete_mechanism_result=mechanism_result,
+  )
+
+
+def _run_two_pass(
+    synth: data_generation_v3.TabularSynthesizer,
+    rng: np.random.Generator,
+    create_rows_fn: Callable[[beam.Pipeline], beam.PCollection],
+    *,
+    temp_location: str | None = None,
+    pipeline_kwargs: dict[str, Any] | None = None,
+) -> data_generation_v3.DataGenerationResult:
+  """Two-pass Beam pipeline that delegates to a local TabularSynthesizer."""
+  total_count_mechanism = synth.total_count_mechanism
+  sigma = total_count_mechanism.sigma if total_count_mechanism else None
+  if synth.initializers is None or sigma is None:
+    raise ValueError('TabularSynthesizer must be calibrated.')
+  inits = cast(dict[str, Initializer], synth.initializers)
+  if pipeline_kwargs is None:
+    pipeline_kwargs = {}
+
+  created_temp_dir = temp_location is None
+  temp_dir = temp_location or tempfile.mkdtemp(prefix='dpsynth_beam_')
+  summary_path = FileSystems.join(temp_dir, 'sufficient_stats.bin')
+  count_path = FileSystems.join(temp_dir, 'row_count.bin')
+  marginals_path = FileSystems.join(temp_dir, 'clique_vector.bin')
+  try:
+    # Pass 1: privately learn distribution of each column independently.
+    # Beam computes lightweight per-column sufficient statistics in a
+    # distributed pass; these are small, so we materialize them on the driver.
+    with beam.Pipeline(**pipeline_kwargs) as p:
+      rows = create_rows_fn(p)
+      summary = (
+          rows
+          | ComputeSufficientStats(inits)
+          | 'ToDict' >> beam.combiners.ToDict()
+      )
+      _ = summary | 'WriteSummary' >> beam.Map(_write, path=summary_path)
+      count = rows | 'CountRows' >> beam.combiners.Count.Globally()
+      _ = count | 'WriteRowCount' >> beam.Map(_write, path=count_path)
+    # We run this on the driver so we don't have to track worker-side RNGs.
+    sparse_stats = _read(summary_path)
+    column_measurements = run_from_summary(sparse_stats, inits, rng)
+    num_rows = int(_read(count_path))
+    logging.info('[DPSynth/Beam]: Pass 1 complete.')
+
+    total = max(1.0, total_count_mechanism.noisy_count(rng, num_rows))
+    total_measurement = mbi.LinearMeasurement(
+        np.array([total]), (), stddev=sigma
+    )
+
+    # Ask the configured discrete mechanism which marginals it needs.
+    mbi_domain = data_generation_v3.TabularCodec.from_measurements(
+        column_measurements, synth.domains
+    ).mbi_domain
+    workload = synth.discrete_mechanism.supporting_cliques(mbi_domain)
+
+    # Pass 2: compute the marginal workload.
+    with beam.Pipeline(**pipeline_kwargs) as p:
+      rows = create_rows_fn(p)
+      marginals = rows | ComputeMarginals(
+          column_measurements,
+          dict(synth.domains),
+          workload,
+      )
+      _ = marginals | 'WriteCliqueVector' >> beam.Map(
+          _write, path=marginals_path
+      )
+    clique_vector = _read(marginals_path)
+    logging.info('[DPSynth/Beam]: Pass 2 complete.')
+
+    # Run the discrete mechanism and decode on the driver.
+    return generate_from_marginals(
+        synth, rng, column_measurements, clique_vector, total_measurement
+    )
+  finally:
+    # Only remove a temp dir we created; never a user-supplied temp_location.
+    if created_temp_dir:
+      shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@dataclasses.dataclass
+class BeamTabularSynthesizer(primitives.DPMechanism):
+  """Beam-backed DPMechanism with the TabularSynthesizer calibrate->run API.
+
+  Subclasses :class:`DPMechanism` so it inherits ``calibrate`` for free, but
+  delegates the actual privacy work to a *composed* :class:`TabularSynthesizer`:
+  ``configure`` and ``dp_event`` forward verbatim to the wrapped synthesizer, so
+  the distributed path consumes exactly the same privacy budget as the in-memory
+  path. Only execution differs: per-column initialization and the marginal
+  workload run over an Apache Beam pipeline, while the discrete mechanism and
+  decoding run on the driver. Composing (rather than subclassing) the
+  synthesizer keeps the core, NumPy/pandas-only synthesizer free of any Beam
+  dependency.
+
+  Usage::
+
+      synth = data_generation_v3.TabularSynthesizer(domains=domains)
+      beam_synth = BeamTabularSynthesizer(synth).configure(zcdp_rho=1.0)
+      result = beam_synth(rng, create_rows_fn)
+      synthetic_df = result.synthetic_data
+
+  Attributes:
+    synthesizer: The wrapped local-mode TabularSynthesizer. Supplies the domain,
+      sub-mechanisms, constraints, and privacy calibration.
+    temp_location: Directory used to shuttle small singleton results between the
+      pipeline and the driver. Must be readable and writable by all workers --
+      i.e. a shared distributed filesystem for distributed runners. Defaults to
+      a local temp directory, which is only valid for in-process runners.
+    pipeline_options: Optional Beam pipeline options applied to both passes.
+  """
+
+  synthesizer: data_generation_v3.TabularSynthesizer
+  temp_location: str | None = None
+  pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
+
+  def configure(
+      self, *, zcdp_rho: float, delta: float = 0.0
+  ) -> BeamTabularSynthesizer:
+    """Returns a copy whose synthesizer is configured with the given budget."""
+    synthesizer = self.synthesizer.configure(zcdp_rho=zcdp_rho, delta=delta)
+    return dataclasses.replace(self, synthesizer=synthesizer)
+
+  @property
+  def dp_event(self) -> dp_accounting.DpEvent:
+    """The composed DpEvent of the wrapped synthesizer."""
+    return self.synthesizer.dp_event
+
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      create_rows_fn: Callable[[beam.Pipeline], beam.PCollection],
+  ) -> data_generation_v3.DataGenerationResult:
+    """Generates DP synthetic data by running the two-pass Beam pipeline.
+
+    Args:
+      rng: NumPy random generator.
+      create_rows_fn: A callable that takes a ``beam.Pipeline`` and returns a
+        ``PCollection[Row]``. This is a factory rather than a plain
+        ``PCollection`` because synthesis runs as two separate Beam pipelines
+        (pass 2's marginal workload depends on the domain discovered in pass 1),
+        and a ``PCollection`` is bound to the single pipeline it was built in.
+        The factory lets the source be re-attached to each pipeline; it is
+        called once per pass, so it must be safe to read the source twice.
+
+    Returns:
+      A DataGenerationResult containing the synthetic DataFrame.
+    """
+    return _run_two_pass(
+        self.synthesizer,
+        rng,
+        create_rows_fn,
+        temp_location=self.temp_location,
+        pipeline_kwargs={'options': self.pipeline_options},
     )
