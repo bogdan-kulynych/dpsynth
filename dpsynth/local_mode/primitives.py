@@ -301,7 +301,7 @@ class DPQuantiles(DPMechanism):
       raise ValueError(_UNCALIBRATED_MSG.format(param='_epsilon_levels'))
     return sum(e**2 / 8.0 for e in self._epsilon_levels)
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0, epsilon_ratio: float = 2.0
   ) -> DPQuantiles:
     """Returns a copy calibrated to the given zCDP budget.
@@ -365,7 +365,7 @@ class DPGaussianHistogram(DPMechanism):
   domain_size: int
   sigma: float | None = None
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> DPGaussianHistogram:
     """Returns a copy with sigma derived from the zCDP budget."""
@@ -394,7 +394,7 @@ class DPGaussianCount(DPMechanism):
 
   sigma: float | None = None
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> DPGaussianCount:
     """Returns a copy with sigma derived from the zCDP budget."""
@@ -437,7 +437,7 @@ class DPPartitionSelection(DPMechanism):
   min_count: int = 1
   sigma: float | None = None
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> DPPartitionSelection:
     """Returns a copy with sigma derived from the zCDP budget."""

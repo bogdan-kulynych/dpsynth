@@ -59,7 +59,7 @@ class DirectMechanism(base.DiscreteMechanism):
     """Returns the DP event for the direct mechanism."""
     self._check_calibration()
     return dp_accounting.GaussianDpEvent(
-        noise_multiplier=accounting.zcdp_gaussian_sigma(self.measurement_rho)
+        noise_multiplier=accounting.zcdp_gaussian_sigma(self.measurement_rho)  # pyrefly: ignore[bad-argument-type]
     )
 
   def _select(self, rng, data, measurements, phase_times):

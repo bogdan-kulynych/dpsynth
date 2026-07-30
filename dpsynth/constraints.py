@@ -52,7 +52,7 @@ def _validate(c: Constraint) -> None:
   if c.functional_dependency is None:
     combos = c.possible_combinations or c.impossible_combinations
     n_attrs = len(c.attribute_names)
-    for combo in combos:
+    for combo in combos:  # pyrefly: ignore[not-iterable]
       if len(combo) != n_attrs:
         raise ValueError(
             'Each combination must have length equal to the number of'
@@ -122,7 +122,7 @@ class Constraint:
       )
 
     combos = self.possible_combinations or self.impossible_combinations
-    encoded = [[enc(v) for enc, v in zip(encoders, c)] for c in combos]
+    encoded = [[enc(v) for enc, v in zip(encoders, c)] for c in combos]  # pyrefly: ignore[not-iterable]
     indices = np.array(encoded, dtype=np.int32)
     if self.possible_combinations is not None:
       return mbi.Constraint(domain=mbi_domain, valid=indices)

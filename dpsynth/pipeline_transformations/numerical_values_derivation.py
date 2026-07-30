@@ -91,7 +91,7 @@ def derive_numerical_attributes(
     if lo >= hi:
       # Constant column: pad range so the attribute is valid.
       hi = lo + 1.0
-    return domain.NumericalAttribute(min_value=lo, max_value=hi)
+    return domain.NumericalAttribute(min_value=lo, max_value=hi)  # pyrefly: ignore[unexpected-keyword]
 
   key_to_attr = backend.map_values(
       min_max,

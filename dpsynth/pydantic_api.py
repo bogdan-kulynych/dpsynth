@@ -61,7 +61,7 @@ def _numerical_attribute_from_field_info(
   # NumericalAttribute uses a convention where both the min_value and max_value
   # are assumed to be inclusive.  More general bounds are supported by the
   # pydantic metadata, so we convert to the expected representation here.
-  optional, base_type = _get_base_type(field_info.annotation)
+  optional, base_type = _get_base_type(field_info.annotation)  # pyrefly: ignore[bad-argument-type]
 
   lower_bound = upper_bound = None
   for meta in field_info.metadata:
@@ -86,10 +86,10 @@ def _numerical_attribute_from_field_info(
     raise ValueError("Must specify lower and upper bounds for numeric fields.")
 
   return domain.NumericalAttribute(
-      min_value=lower_bound,
-      max_value=upper_bound,
-      clip_to_range=not optional,
-      dtype=base_type.__name__,
+      min_value=lower_bound,  # pyrefly: ignore[unexpected-keyword]
+      max_value=upper_bound,  # pyrefly: ignore[unexpected-keyword]
+      clip_to_range=not optional,  # pyrefly: ignore[unexpected-keyword]
+      dtype=base_type.__name__,  # pyrefly: ignore[unexpected-keyword]
   )
 
 
@@ -97,7 +97,7 @@ def _categorical_attribute_from_field_info(
     field_info: FieldInfo,
 ) -> domain.CategoricalAttribute:
   """Infers a CategoricalAttribute from a pydantic FieldInfo."""
-  optional, base_type = _get_base_type(field_info.annotation)
+  optional, base_type = _get_base_type(field_info.annotation)  # pyrefly: ignore[bad-argument-type]
   if inspect.isclass(base_type) and issubclass(base_type, enum.Enum):
     possible_values = [str(e.value) for e in base_type]
   elif typing.get_origin(base_type) is Literal:
@@ -111,7 +111,7 @@ def _categorical_attribute_from_field_info(
     possible_values = [str(None)] + possible_values
 
   return domain.CategoricalAttribute(
-      possible_values=possible_values, out_of_domain_index=0
+      possible_values=possible_values, out_of_domain_index=0  # pyrefly: ignore[unexpected-keyword]
   )
 
 
@@ -122,7 +122,7 @@ def infer_domain_from_model(
 
   attributes = {}
   for name, meta in model_cls.model_fields.items():
-    _, base_type = _get_base_type(meta.annotation)
+    _, base_type = _get_base_type(meta.annotation)  # pyrefly: ignore[bad-argument-type]
     if base_type in (int, float):
       attributes[name] = _numerical_attribute_from_field_info(meta)
     elif base_type is bool:
@@ -194,6 +194,6 @@ def dataframe_to_models(
       return v
 
   return [
-      model_cls(**{k: _coerce(v) for k, v in row.items()})
+      model_cls(**{k: _coerce(v) for k, v in row.items()})  # pyrefly: ignore[bad-unpacking]
       for _, row in df.iterrows()
   ]

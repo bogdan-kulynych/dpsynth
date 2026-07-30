@@ -92,7 +92,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     self._check_calibration()
     # SWIFT's budget is split between one-way, selection, and measurement.
     # All three are Gaussian mechanism applications.
-    return dp_accounting.ZCDpEvent(self.zcdp_rho)
+    return dp_accounting.ZCDpEvent(self.zcdp_rho)  # pyrefly: ignore[bad-argument-type]
 
   def _run(self, rng, data, measurements, constraints, phase_times):
     """Runs SWIFT's select-measure-estimate pipeline in a single pass."""
@@ -114,7 +114,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     logging.info('[SWIFT] %d candidates.', len(candidates))
 
     with common.timed(phase_times, 'from_projectable'):
-      answers = mbi.CliqueVector.from_projectable(data, candidates)
+      answers = mbi.CliqueVector.from_projectable(data, candidates)  # pyrefly: ignore[bad-argument-type]
     domain = data.domain
 
     with common.timed(phase_times, 'initial_mirror_descent'):
@@ -133,7 +133,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
 
       with common.timed(phase_times, 'compute_initial_errors'):
         errors = _compute_initial_errors(
-            rng, answers, model, list(candidates), l1_error_budget
+            rng, answers, model, list(candidates), l1_error_budget  # pyrefly: ignore[bad-argument-type]
         )
 
       with common.timed(phase_times, 'select_queries'):
@@ -156,7 +156,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     pgm_future, synth_future = None, None
     try:
       pgm_future = estimator.precompile(
-          domain, measurements, extra_cliques=list(selected)
+          domain, measurements, extra_cliques=list(selected)  # pyrefly: ignore[bad-argument-type]
       )
       synth_future = mbi.extensions.precompile(domain, list(jtree.nodes), rows)
       logging.info('[SWIFT] Started precompilation of MirrorDescent + synth.')
@@ -169,7 +169,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     with common.timed(phase_times, 'measurement'):
       logging.info('[SWIFT] Starting measurements.')
       new_measurements, _ = _measure_selected_marginals(
-          rng, answers, selected, budget_remaining
+          rng, answers, selected, budget_remaining  # pyrefly: ignore[bad-argument-type]
       )
       measurements.extend(new_measurements)
       logging.info('[SWIFT] Finished measurements.')
@@ -264,7 +264,7 @@ def build_clique_tree(
   }
 
   # Sort once — values never change, only entries get removed.
-  sorted_cliques = sorted(errors, key=errors.get, reverse=True)
+  sorted_cliques = sorted(errors, key=errors.get, reverse=True)  # pyrefly: ignore[no-matching-overload]
 
   # Cap candidates to keep the greedy loop tractable.
   if max_candidates > 0 and len(sorted_cliques) > max_candidates:

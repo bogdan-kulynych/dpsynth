@@ -258,7 +258,7 @@ class _EncodeAndProject(beam.DoFn):
     self._clique_meta: list[tuple[int, mbi.Clique, tuple[int, ...]]] = []
     for idx, clique in enumerate(workload):
       shape = tuple(
-          int(column_measurements[c].categorical_attribute.size) for c in clique
+          int(column_measurements[c].categorical_attribute.size) for c in clique  # pyrefly: ignore[bad-index]
       )
       self._clique_meta.append((idx, clique, shape))
 
@@ -271,7 +271,7 @@ class _EncodeAndProject(beam.DoFn):
     # supporting_cliques() never returns the 0-way clique (), so shape is always
     # non-empty here and np.ravel_multi_index is safe.
     for clique_idx, clique_cols, shape in self._clique_meta:
-      multi_index = tuple(encoded[c] for c in clique_cols)
+      multi_index = tuple(encoded[c] for c in clique_cols)  # pyrefly: ignore[bad-index]
       linear = int(np.ravel_multi_index(multi_index, shape))
       yield clique_idx, linear
 
@@ -290,7 +290,7 @@ def _assemble_dense_marginal(element, clique_meta, mbi_domain):
   dense = np.zeros(total_size, dtype=np.float64)
   for linear_idx, count in sparse_pairs:
     dense[linear_idx] = count
-  return mbi.Factor(mbi_domain.project(clique_cols), dense.reshape(shape))
+  return mbi.Factor(mbi_domain.project(clique_cols), dense.reshape(shape))  # pyrefly: ignore[bad-argument-type]
 
 
 # Stage 2 of the two-pass pipeline: compute the joint marginals the DP mechanism
@@ -477,7 +477,7 @@ def _run_two_pass(
     column_measurements = run_from_summary(sparse_stats, inits, rng)
     num_rows = int(_read(count_path))
     logging.info('[DPSynth/Beam]: Pass 1 complete.')
-
+    # pyrefly: ignore[missing-attribute]
     total = max(1.0, total_count_mechanism.noisy_count(rng, num_rows))
     total_measurement = mbi.LinearMeasurement(
         np.array([total]), (), stddev=sigma
@@ -548,7 +548,7 @@ class BeamTabularSynthesizer(primitives.DPMechanism):
   temp_location: str | None = None
   pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> BeamTabularSynthesizer:
     """Returns a copy whose synthesizer is configured with the given budget."""

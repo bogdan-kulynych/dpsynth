@@ -97,7 +97,7 @@ class DPTrainer(primitives.DPMechanism):
   performance_flags: execution_plan.PerformanceFlags | None = None
   callback: training.CallbackFn | None = None
 
-  def configure(self, *, zcdp_rho: float, delta: float = 0.0) -> DPTrainer:
+  def configure(self, *, zcdp_rho: float, delta: float = 0.0) -> DPTrainer:  # pyrefly: ignore[bad-override]
     """Returns a copy with noise calibrated to the zCDP budget.
 
     Uses a loose upper bound ignoring subsampling amplification:
@@ -145,7 +145,7 @@ class DPTrainer(primitives.DPMechanism):
       raise ValueError('noise_multiplier is not set. Call calibrate() first.')
 
     d = dataclasses.asdict(self.mechanism_config)
-    d['strategy'] = self.mechanism_config.strategy.tolist()  # JSON/numpy hack.
+    d['strategy'] = self.mechanism_config.strategy.tolist()  # JSON/numpy hack.  # pyrefly: ignore[missing-attribute]
     logging.info('DPTrainer config:\n%s', json.dumps(d, indent=2))
 
     dp_trainer = training.DPTrainer(

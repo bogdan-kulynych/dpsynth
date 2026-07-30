@@ -141,7 +141,7 @@ class AIMMechanism(base.DiscreteMechanism):
     """Returns the DP event for the AIM mechanism."""
     self._check_calibration()
     events = self._one_way_dp_event()
-    events.append(dp_accounting.ZCDpEvent(self._loop_rho))
+    events.append(dp_accounting.ZCDpEvent(self._loop_rho))  # pyrefly: ignore[bad-argument-type]
     return dp_accounting.ComposedDpEvent(events)
 
   def _run(self, rng, data, measurements, constraints, phase_times):
@@ -151,7 +151,7 @@ class AIMMechanism(base.DiscreteMechanism):
     terminate = False
     rho_remaining = self._loop_rho
     max_rounds = self.max_rounds or 16 * len(data.domain)
-    rho_per_round = self._loop_rho / max_rounds
+    rho_per_round = self._loop_rho / max_rounds  # pyrefly: ignore[unsupported-operation]
 
     #########################################################################
     # Compile workload into candidate measurements, and precompute answers. #
@@ -159,7 +159,7 @@ class AIMMechanism(base.DiscreteMechanism):
     candidates = common.compiled_workload(
         data.domain, self.workload, self.max_marginal_size
     )
-    answers = mbi.CliqueVector.from_projectable(data, list(candidates))
+    answers = mbi.CliqueVector.from_projectable(data, list(candidates))  # pyrefly: ignore[bad-argument-type]
     logging.info('[AIM]: Calculated workload-query answers.')
 
     estimator = mbi.estimation.MirrorDescent(self.marginal_oracle)
@@ -171,7 +171,7 @@ class AIMMechanism(base.DiscreteMechanism):
     t = 0
     while not terminate:
       t += 1
-      if rho_remaining < 2 * rho_per_round:
+      if rho_remaining < 2 * rho_per_round:  # pyrefly: ignore[unsupported-operation]
         logging.info('[AIM] Final round, Using all remaining privacy budget.')
         rho_per_round = rho_remaining
         terminate = True
@@ -180,11 +180,11 @@ class AIMMechanism(base.DiscreteMechanism):
       # Select a marginal query worst approximated by the current model.     #
       ########################################################################
       with common.timed(phase_times, 'selection'):
-        rho_remaining -= rho_per_round
+        rho_remaining -= rho_per_round  # pyrefly: ignore[unsupported-operation]
         fraction = self.select_budget_fraction
-        sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)
-        epsilon = accounting.zcdp_exponential_eps(fraction * rho_per_round)
-        size_limit = self.max_model_size * (zcdp_rho - rho_remaining) / zcdp_rho
+        sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)  # pyrefly: ignore[unsupported-operation]
+        epsilon = accounting.zcdp_exponential_eps(fraction * rho_per_round)  # pyrefly: ignore[unsupported-operation]
+        size_limit = self.max_model_size * (zcdp_rho - rho_remaining) / zcdp_rho  # pyrefly: ignore[unsupported-operation]
         small_candidates = _filter_candidates(candidates, model, size_limit)
 
         estimates = mbi.marginal_oracles.bulk_variable_elimination(
@@ -207,7 +207,7 @@ class AIMMechanism(base.DiscreteMechanism):
           '[AIM] Round %d, Budget used: %.4f, Measuring: %s, Candidates: %d,'
           ' cliques: %d, treewidth: %d, memory: %d bytes',
           t,
-          (zcdp_rho - rho_remaining) / zcdp_rho,
+          (zcdp_rho - rho_remaining) / zcdp_rho,  # pyrefly: ignore[unsupported-operation]
           marginal_query,
           len(small_candidates),
           summary.num_cliques,
@@ -220,7 +220,7 @@ class AIMMechanism(base.DiscreteMechanism):
       ######################################################################
       with common.timed(phase_times, 'measurement'):
         measurement = common.measure_marginals_with_noise(
-            rng, data, [marginal_query], sigma
+            rng, data, [marginal_query], sigma  # pyrefly: ignore[bad-argument-type]
         )[0]
         measurements.append(measurement)
         old_estimate = model.project(marginal_query).datavector()
@@ -250,7 +250,7 @@ class AIMMechanism(base.DiscreteMechanism):
       threshold = sigma * np.sqrt(2 / np.pi) * data.domain.size(marginal_query)
       if np.linalg.norm(new_estimate - old_estimate, ord=1) <= threshold:
         # No useful information at this noise level, increase budget per round.
-        rho_per_round *= self.anneal_factor
+        rho_per_round *= self.anneal_factor  # pyrefly: ignore[unsupported-operation]
         fraction = self.select_budget_fraction
         sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)
         logging.info('[AIM] Reducing sigma: %.1f', sigma)

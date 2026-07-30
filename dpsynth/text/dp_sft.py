@@ -70,7 +70,7 @@ class DPFineTuner(primitives.DPMechanism):
   )
   performance_flags: execution_plan.PerformanceFlags | None = None
 
-  def configure(self, *, zcdp_rho: float, delta: float = 0.0) -> DPFineTuner:
+  def configure(self, *, zcdp_rho: float, delta: float = 0.0) -> DPFineTuner:  # pyrefly: ignore[bad-override]
     """Returns a copy with noise_multiplier calibrated to the zCDP budget.
 
     Sets the noise_multiplier to satisfy ``zcdp_rho`` under a **loose upper
@@ -93,7 +93,7 @@ class DPFineTuner(primitives.DPMechanism):
       A new ``DPFineTuner`` with calibrated
       ``mechanism_config.noise_multiplier``.
     """
-    num_bands = len(self.mechanism_config.strategy)
+    num_bands = len(self.mechanism_config.strategy)  # pyrefly: ignore[bad-argument-type]
     rounds = math.ceil(self.mechanism_config.iterations / num_bands)
     noise_multiplier = math.sqrt(rounds / (2.0 * zcdp_rho))
     calibrated_config = dataclasses.replace(
@@ -147,7 +147,7 @@ class DPFineTuner(primitives.DPMechanism):
     trainer = dp_trainer.DPTrainer(
         mechanism_config=self.mechanism_config,
         init_params=trainable_params,
-        loss_fn=loss_fn,
+        loss_fn=loss_fn,  # pyrefly: ignore[bad-argument-type]
         optimizer=self.optimizer,
         performance_flags=self.performance_flags,
     )

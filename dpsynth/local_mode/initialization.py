@@ -120,7 +120,7 @@ class NumericalInitializer(primitives.DPMechanism):
     """Grid size used for histogram construction."""
     return self._grid_spec[2]
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0, epsilon_ratio: float = 2.0
   ) -> NumericalInitializer:
     """Returns a copy calibrated to the given zCDP budget."""
@@ -271,7 +271,7 @@ class CategoricalInitializer(primitives.DPMechanism):
       default=None, repr=False
   )
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> CategoricalInitializer:
     """Returns a copy calibrated to the given zCDP budget."""
@@ -330,7 +330,7 @@ class OpenSetCategoricalInitializer(primitives.DPMechanism):
       default=None, repr=False
   )
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
   ) -> OpenSetCategoricalInitializer:
     """Returns a copy calibrated to the given zCDP budget."""

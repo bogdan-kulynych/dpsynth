@@ -196,7 +196,7 @@ class MSTMechanism(base.DiscreteMechanism):
       return _select_two_way_marginal_queries(
           rng,
           data,
-          self._select_rho,
+          self._select_rho,  # pyrefly: ignore[bad-argument-type]
           measurements,
           maximum_marginal_size=self.maximum_marginal_size,
       )

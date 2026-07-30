@@ -128,7 +128,7 @@ class DiscreteMechanism(api.DPMechanism):
   def remaining_rho(self):
     """zCDP budget remaining after one-way measurements."""
     one_way_rho = 0.0 if self.one_way_rho is None else self.one_way_rho
-    return self.zcdp_rho - one_way_rho
+    return self.zcdp_rho - one_way_rho  # pyrefly: ignore[unsupported-operation]
 
   def _one_way_dp_event(self):
     """DpEvents for the shared one-way measurement ([] if there is none)."""
@@ -236,7 +236,7 @@ class DiscreteMechanism(api.DPMechanism):
 
     if selected:
       with common.timed(phase_times, 'measurement'):
-        sigma = accounting.zcdp_gaussian_sigma(self.measurement_rho)
+        sigma = accounting.zcdp_gaussian_sigma(self.measurement_rho)  # pyrefly: ignore[bad-argument-type]
         measurements = measurements + common.measure_marginals_with_noise(
             rng, data, selected, sigma
         )

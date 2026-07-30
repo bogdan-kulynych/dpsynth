@@ -153,7 +153,7 @@ class GenAIBackend:
         response_text = inlined_resp.response and inlined_resp.response.text
         if not response_text:
           raise ValueError('Empty response text.')
-        row, count = _parse_response(schema, response_text)
+        row, count = _parse_response(schema, response_text)  # pyrefly: ignore[bad-argument-type]
         results.append((row, count))
       except Exception:  # pylint: disable=broad-except
         if isinstance(schema, Mapping):

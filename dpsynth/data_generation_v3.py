@@ -90,6 +90,7 @@ class ColumnCodec:
     """Encodes raw column values to discrete integer ids."""
     if self.column_measurement.bin_edges is not None:
       return vtx.discretize(
+          # pyrefly: ignore[bad-argument-type]
           values, self.column_measurement.bin_edges, self.attribute
       )
     return vtx.discrete_encode(
@@ -100,6 +101,7 @@ class ColumnCodec:
     """Decodes synthetic discrete ids back to the original domain."""
     if self.column_measurement.bin_edges is not None:
       return vtx.undiscretize(
+          # pyrefly: ignore[bad-argument-type]
           ids, self.column_measurement.bin_edges, self.attribute, rng=rng
       )
     return vtx.discrete_decode(
@@ -153,6 +155,7 @@ class TabularCodec:
     discrete = {
         col: c.encode(data[col].values) for col, c in self.columns.items()
     }
+    # pyrefly: ignore[bad-argument-type]
     return mbi.Dataset(discrete, self.mbi_domain)
 
   def decode(
@@ -213,7 +216,7 @@ class TabularSynthesizer(primitives.DPMechanism):
   total_count_mechanism: primitives.DPGaussianCount | None = None
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
 
-  def configure(
+  def configure(  # pyrefly: ignore[bad-override]
       self,
       *,
       zcdp_rho: float,
@@ -341,7 +344,7 @@ class TabularSynthesizer(primitives.DPMechanism):
     any_col = next(iter(self.domains))
     total = max(1.0, self.total_count_mechanism(rng, data[any_col].values))
     total_measurement = mbi.LinearMeasurement(
-        np.array([total]), (), stddev=self.total_count_mechanism.sigma
+        np.array([total]), (), stddev=self.total_count_mechanism.sigma  # pyrefly: ignore[bad-argument-type]
     )
 
     results: dict[str, initialization.ColumnMeasurement] = {}

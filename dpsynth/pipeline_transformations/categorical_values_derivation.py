@@ -96,7 +96,7 @@ def derive_categorical_values(
   def to_categorical_attribute(values) -> domain.CategoricalAttribute:
     values = sorted(values, key=str)  # to make sure the order is deterministic
     # Cast to str for homogeneity with the '<OOD>' sentinel.
-    return domain.CategoricalAttribute(['<OOD>'] + [str(v) for v in values])
+    return domain.CategoricalAttribute(['<OOD>'] + [str(v) for v in values])  # pyrefly: ignore[bad-argument-count]
 
   categorical_attributes = backend.map_values(
       selected_categorical_values,
@@ -110,7 +110,7 @@ def derive_categorical_values(
     res = dict(attributes)
     for key in attribute_keys_to_derive:
       if key not in res:
-        res[key] = domain.CategoricalAttribute(['<OOD>'])
+        res[key] = domain.CategoricalAttribute(['<OOD>'])  # pyrefly: ignore[bad-argument-count]
     return res
 
   return backend.map(

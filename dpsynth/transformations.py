@@ -199,7 +199,7 @@ def create_discretize_transformation(
       attribute_domain.max_value,
   ]
   intervals = [
-      _Interval(left, right, closed_left=(i == 0))
+      _Interval(left, right, closed_left=(i == 0))  # pyrefly: ignore[bad-argument-count, unexpected-keyword]
       for i, (left, right) in enumerate(zip(bin_edges[:-1], bin_edges[1:]))
   ]
   interval_strs = [str(iv) for iv in intervals]

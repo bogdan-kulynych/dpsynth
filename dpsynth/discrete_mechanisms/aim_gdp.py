@@ -74,7 +74,7 @@ def _compute_dp_errors(
 
   # sensitivity is 1 because it is an L1 norm of a vector that changes by
   # at most +/- 1 in one entry.
-  per_candidate_sigma = accounting.gdp_gaussian_sigma(gdp_budget / len(subset))
+  per_candidate_sigma = accounting.gdp_gaussian_sigma(gdp_budget / len(subset))  # pyrefly: ignore[bad-argument-type]
   result = {}
   for cl in subset:
     actual = answers[cl].datavector(flatten=True)
@@ -102,11 +102,11 @@ def _worst_approximated(
     bias = (2 / np.pi) ** 0.5 * measure_sigma * model.domain.size(cl)
     current_score_estimates[cl] = weight * (errors[cl] - bias)
 
-  subset = sorted(current_score_estimates, key=current_score_estimates.get)
+  subset = sorted(current_score_estimates, key=current_score_estimates.get)  # pyrefly: ignore[no-matching-overload]
   subset = subset[-max_new_evals:]
 
   estimates = mbi.marginal_oracles.bulk_variable_elimination(
-      model.potentials, subset, model.total
+      model.potentials, subset, model.total  # pyrefly: ignore[bad-argument-type]
   )
   # Only step that uses "answers", satisfies DP.
   current_errors = _compute_dp_errors(
@@ -120,7 +120,7 @@ def _worst_approximated(
     bias = (2 / np.pi) ** 0.5 * measure_sigma * model.domain.size(cl)
     current_scores[cl] = weight * (errors[cl] - bias)
 
-  return max(current_scores, key=current_scores.get)
+  return max(current_scores, key=current_scores.get)  # pyrefly: ignore[no-matching-overload]
 
 
 # select loop, injecting the budgeting strategy (zCDP vs. GDP) as configuration.
@@ -188,7 +188,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
     self._check_calibration()
     events = self._one_way_dp_event()
     # The loop's privacy cost in zCDP terms.
-    events.append(dp_accounting.ZCDpEvent(self._loop_rho))
+    events.append(dp_accounting.ZCDpEvent(self._loop_rho))  # pyrefly: ignore[bad-argument-type]
     return dp_accounting.ComposedDpEvent(events)
 
   def _run(self, rng, data, measurements, constraints, phase_times):
@@ -196,7 +196,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
     logging.info('[AIM] Starting Mechanism.')
 
     # Convert loop's zCDP budget to GDP budget for internal allocation.
-    gdp_budget = accounting.zcdp_to_gdp(self._loop_rho)
+    gdp_budget = accounting.zcdp_to_gdp(self._loop_rho)  # pyrefly: ignore[bad-argument-type]
 
     terminate = False
     budget_remaining = gdp_budget
@@ -209,7 +209,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
     candidates = common.compiled_workload(
         data.domain, self.workload, self.max_marginal_size
     )
-    answers = mbi.CliqueVector.from_projectable(data, candidates)
+    answers = mbi.CliqueVector.from_projectable(data, candidates)  # pyrefly: ignore[bad-argument-type]
     logging.info('[AIM] Calculated workload-query answers.')
     domain = data.domain
 
@@ -227,7 +227,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
     per_candidate_sigma = accounting.gdp_gaussian_sigma(
         0.5 * budget_per_round / len(candidates)
     )
-    errors = common.compute_independence_errors(data, model, list(candidates))
+    errors = common.compute_independence_errors(data, model, list(candidates))  # pyrefly: ignore[bad-argument-type]
     for cl in errors:
       errors[cl] += rng.normal(loc=0.0, scale=per_candidate_sigma)
     logging.info('[AIM] Computed initial errors.')
@@ -283,7 +283,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
       ######################################################################
       with common.timed(phase_times, 'measurement'):
         measurement = common.measure_marginals_with_noise(
-            rng, data, [marginal_query], measure_sigma
+            rng, data, [marginal_query], measure_sigma  # pyrefly: ignore[bad-argument-type]
         )[0]
         measurements.append(measurement)
         old_estimate = model.project(marginal_query).datavector()

@@ -37,7 +37,7 @@ class IndependentMechanism(base.DiscreteMechanism):
     """Returns the DP event for the independent mechanism."""
     self._check_calibration()
     return dp_accounting.GaussianDpEvent(
-        noise_multiplier=accounting.zcdp_gaussian_sigma(self.one_way_rho)
+        noise_multiplier=accounting.zcdp_gaussian_sigma(self.one_way_rho)  # pyrefly: ignore[bad-argument-type]
     )
 
   def _select(self, rng, data, measurements, phase_times):

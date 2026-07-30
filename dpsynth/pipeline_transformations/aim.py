@@ -131,7 +131,7 @@ def _generate_workload(domain: mbi.Domain) -> list[MarginalQuery]:
     return tuple(int(x) for x in t)
 
   return [
-      tuple_to_int(cl)
+      tuple_to_int(cl)  # pyrefly: ignore[bad-argument-type]
       for cl in itertools.combinations(domain, 3)
       if domain.size(cl) <= 1e6
   ]

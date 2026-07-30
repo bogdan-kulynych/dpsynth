@@ -260,7 +260,7 @@ def compression_transformation(
     measurement: mbi.LinearMeasurement,
 ) -> tuple[int, transformations.DataTransformation[int, int]]:
   """Returns a domain compression transformation for the given measurement."""
-  mask = measurement.noisy_measurement < 3 * measurement.stddev
+  mask = measurement.noisy_measurement < 3 * measurement.stddev  # pyrefly: ignore[unsupported-operation]
   size, transform_fn = transformations.create_rare_value_merging_transformation(
       mask  # pyrefly: ignore[bad-argument-type]
   )
@@ -429,7 +429,7 @@ def compute_independence_errors(
     cliques: Sequence[mbi.Clique],
 ) -> dict[mbi.Clique, float]:
   """Computes L1 errors between actual marginals and the independence model."""
-  total = float(model.total)
+  total = float(model.total)  # pyrefly: ignore[bad-argument-type]
 
   # Pure numpy to avoid XLA recompilation: each distinct clique shape triggers
   # a separate compilation, which dominates runtime for large candidate sets.
