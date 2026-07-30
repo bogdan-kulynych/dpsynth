@@ -94,7 +94,7 @@ def _mixed_workload_mechanism_baseline_errors(
 
   mechanism_error = np.mean([
       _normalized_l1(
-          mechanism_result.encoded_data,
+          mechanism_result.codec.encode(data),
           mechanism_result.discrete_mechanism_result.model,
           clique,
       )
@@ -102,7 +102,7 @@ def _mixed_workload_mechanism_baseline_errors(
   ])
   baseline_error = np.mean([
       _normalized_l1(
-          baseline_result.encoded_data,
+          baseline_result.codec.encode(data),
           baseline_result.discrete_mechanism_result.model,
           clique,
       )
