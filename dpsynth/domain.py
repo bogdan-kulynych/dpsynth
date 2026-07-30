@@ -43,14 +43,14 @@ ignore this advice, so that downstream mechanisms don't generate out-of-domain
 values when none should exist.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+import dataclasses
 import functools
 import math
 import pathlib
 
 from typing import Any, Literal, TypeAlias
 
-import attr
 import numpy as np
 import yaml
 
@@ -61,7 +61,7 @@ CategoricalValue: TypeAlias = bool | int | str
 IntervalHandling = Literal['midpoint', 'sample', 'interval']
 
 
-@attr.define(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class CategoricalAttribute:
   """Dataclass for storing metadata about a categorical attribute.
 
@@ -78,18 +78,22 @@ class CategoricalAttribute:
   OpenSetCategoricalAttribute class instead.
 
   Attributes:
-    possible_values: A homogeneous list of possible values for this attribute.
-      All values must share the same type (one of bool, int, float, or str).
+    possible_values: A homogeneous sequence of possible values for this
+      attribute. All values must share the same type (one of bool, int, float,
+      or str).
     out_of_domain_index: The index into possible_values that out-of-domain
       values should be mapped to.
     description: An optional semantic description of the attribute.
   """
 
-  possible_values: list[CategoricalValue] = attr.field(converter=list)
-  out_of_domain_index: int = attr.field(default=0)
-  description: str | None = attr.field(default=None)
+  possible_values: Sequence[CategoricalValue]
+  out_of_domain_index: int = 0
+  description: str | None = None
 
-  def __attrs_post_init__(self):
+  def __post_init__(self):
+    # Coerce to a list to preserve the former attrs ``converter=list`` behavior
+    # (accept any iterable and normalize the stored type).
+    object.__setattr__(self, 'possible_values', list(self.possible_values))
     if self.size == 0:
       raise ValueError('Possible values must not be empty.')
     if self.out_of_domain_index < 0 or self.out_of_domain_index >= self.size:
@@ -122,7 +126,7 @@ class CategoricalAttribute:
     return {str(v): i for i, v in enumerate(self.possible_values)}
 
 
-@attr.define(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class OpenSetCategoricalAttribute:
   """Dataclass representing a categorical attribute with unknown domain.
 
@@ -141,7 +145,7 @@ class OpenSetCategoricalAttribute:
   description: str | None = None
 
 
-@attr.define(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class NumericalAttribute:
   """Dataclass for storing metadata about a numerical attribute.
 
@@ -175,32 +179,28 @@ class NumericalAttribute:
     description: An optional semantic description of the attribute.
   """
 
-  min_value: float = attr.field(converter=float)
-  max_value: float = attr.field(converter=float)
-  clip_to_range: bool = attr.field(default=True)
-  sentinel: float | int | str | None = attr.field(default=None)
-  dtype: str = attr.field(default='float')
-  interval_handling: str = attr.field(default='midpoint')
-  description: str | None = attr.field(default=None)
+  min_value: float
+  max_value: float
+  clip_to_range: bool = True
+  sentinel: float | int | str | None = None
+  dtype: str = 'float'
+  interval_handling: str = 'midpoint'
+  description: str | None = None
 
-  @min_value.validator  # pytype: disable=attribute-error
-  def _validate_min_max(self, *_):
+  def __post_init__(self):
+    # Coerce to float to preserve the former attrs ``converter=float`` behavior;
+    # the checks below mirror the former attrs validators (run in field order).
+    object.__setattr__(self, 'min_value', float(self.min_value))
+    object.__setattr__(self, 'max_value', float(self.max_value))
     if self.min_value >= self.max_value:
       raise ValueError(
           f'min_value ({self.min_value}) must be strictly less than'
           f' max_value ({self.max_value}).'
       )
-
-  @dtype.validator  # pytype: disable=attribute-error
-  def _validate_dtype(self, *_):
     if self.dtype not in ['int', 'float']:
       raise ValueError(
           f'dtype must be either "int" or "float", got {self.dtype}.'
       )
-
-  @interval_handling.validator  # pytype: disable=attribute-error
-  def _validate_interval_handling(self, *_):
-    """Validates interval_handling mode and sentinel type compatibility."""
     if self.interval_handling not in ['midpoint', 'sample', 'interval']:
       raise ValueError(
           'interval_handling must be "midpoint", "sample", or "interval",'
@@ -265,7 +265,7 @@ class NumericalAttribute:
       return invalid_value
 
 
-@attr.define(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class FreeFormTextAttribute:
   """Dataclass for storing metadata about a free-form text attribute.
 
@@ -281,10 +281,10 @@ class FreeFormTextAttribute:
     exemplar: An optional example value for this attribute.
   """
 
-  max_tokens: int = attr.field(default=256)
-  description: str | None = attr.field(default=None)
-  formatting: str | None = attr.field(default=None)
-  exemplar: str | None = attr.field(default=None)
+  max_tokens: int = 256
+  description: str | None = None
+  formatting: str | None = None
+  exemplar: str | None = None
 
 
 AttributeType = (
@@ -299,7 +299,7 @@ def to_yaml_file(domain: Mapping[str, AttributeType], filepath: str | PathType):
   """Writes a dictionary of Attribute objects to a YAML file."""
   yaml_data = {}
   for name, attr_obj in domain.items():
-    yaml_data[name] = attr.asdict(attr_obj)
+    yaml_data[name] = dataclasses.asdict(attr_obj)
   with open(filepath, 'w') as f:
     yaml.dump(yaml_data, f, default_flow_style=False)
 
