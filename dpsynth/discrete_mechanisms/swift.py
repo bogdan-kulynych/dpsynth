@@ -307,7 +307,7 @@ def build_best_clique_tree(
 ) -> nx.Graph:
   """Builds the best clique tree by trying different penalties."""
   best_tree = None
-  best_score = 0.0
+  best_score = float('-inf')
   for penalty in penalties:
     tree = build_clique_tree(domain, errors, max_clique_size, penalty)
     # By measuring these cliques, we will be able to greatly reduce the error.
