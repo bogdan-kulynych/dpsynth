@@ -133,7 +133,12 @@ class SWIFTMechanism(base.DiscreteMechanism):
 
       with common.timed(phase_times, 'compute_initial_errors'):
         errors = _compute_initial_errors(
-            rng, answers, model, list(candidates), l1_error_budget  # pyrefly: ignore[bad-argument-type]
+            rng,
+            answers,  # pyrefly: ignore[bad-argument-type]
+            model,
+            list(candidates),
+            l1_error_budget,
+            max_records_per_user=self.max_records_per_user,
         )
 
       with common.timed(phase_times, 'select_queries'):
@@ -169,7 +174,11 @@ class SWIFTMechanism(base.DiscreteMechanism):
     with common.timed(phase_times, 'measurement'):
       logging.info('[SWIFT] Starting measurements.')
       new_measurements, _ = _measure_selected_marginals(
-          rng, answers, selected, budget_remaining  # pyrefly: ignore[bad-argument-type]
+          rng,
+          answers,  # pyrefly: ignore[bad-argument-type]
+          selected,
+          budget_remaining,
+          max_records_per_user=self.max_records_per_user,
       )
       measurements.extend(new_measurements)
       logging.info('[SWIFT] Finished measurements.')
@@ -332,10 +341,13 @@ def _compute_initial_errors(
     model: mbi.MarkovRandomField,
     cliques: Sequence[mbi.Clique],
     gdp_budget: float,
+    max_records_per_user: int = 1,
 ) -> dict[mbi.Clique, float]:
   """Computes DP initial errors for the SWIFT mechanism."""
   budget_per_clique = gdp_budget / len(cliques)
-  sigma_per_clique = accounting.gdp_gaussian_sigma(budget_per_clique)
+  sigma_per_clique = max_records_per_user * accounting.gdp_gaussian_sigma(
+      budget_per_clique
+  )
   errors = common.compute_independence_errors(data, model, cliques)
   for cl in errors:
     errors[cl] += rng.normal(loc=0.0, scale=sigma_per_clique)
@@ -396,12 +408,13 @@ def _measure_selected_marginals(
     data: mbi.Projectable,
     selected: dict[mbi.Clique, float],
     budget_remaining: float,
+    max_records_per_user: int = 1,
 ) -> tuple[list[mbi.LinearMeasurement], float]:
   """Measures the selected marginal queries."""
   measurements = []
   for cl in selected:
     budget_remaining -= selected[cl]
-    sigma = accounting.gdp_gaussian_sigma(selected[cl])
+    sigma = max_records_per_user * accounting.gdp_gaussian_sigma(selected[cl])
     x = data.project(cl).datavector()
     y = x + rng.normal(loc=0.0, scale=sigma, size=x.size)
     measurements.append(mbi.LinearMeasurement(y, cl, sigma))

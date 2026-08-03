@@ -67,14 +67,17 @@ def _compute_dp_errors(
     estimates: mbi.CliqueVector,
     gdp_budget: float,
     subset: Iterable[mbi.Clique] | None = None,
+    max_records_per_user: int = 1,
 ) -> dict[mbi.Clique, float]:
   """Compute L1 error between the model answers and the true answers with DP."""
   if subset is None:
     subset = answers.cliques
 
-  # sensitivity is 1 because it is an L1 norm of a vector that changes by
-  # at most +/- 1 in one entry.
-  per_candidate_sigma = accounting.gdp_gaussian_sigma(gdp_budget / len(subset))  # pyrefly: ignore[bad-argument-type]
+  # The L1 error of a marginal changes by at most ``max_records_per_user`` when
+  # a single user (contributing up to that many records) is added or removed.
+  per_candidate_sigma = max_records_per_user * accounting.gdp_gaussian_sigma(
+      gdp_budget / len(subset)  # pyrefly: ignore[bad-argument-type]
+  )
   result = {}
   for cl in subset:
     actual = answers[cl].datavector(flatten=True)
@@ -94,12 +97,18 @@ def _worst_approximated(
     select_budget: float,  # satisfies select_budget-GDP.
     measure_sigma: float,
     max_new_evals: int,
+    max_records_per_user: int = 1,
 ) -> mbi.Clique:
   """Returns the worst approximated candidate in the given candidates."""
   current_score_estimates = {}
   for cl in candidates:
     weight = candidates[cl]
-    bias = (2 / np.pi) ** 0.5 * measure_sigma * model.domain.size(cl)
+    bias = (
+        (2 / np.pi) ** 0.5
+        * max_records_per_user
+        * measure_sigma
+        * model.domain.size(cl)
+    )
     current_score_estimates[cl] = weight * (errors[cl] - bias)
 
   subset = sorted(current_score_estimates, key=current_score_estimates.get)  # pyrefly: ignore[no-matching-overload]
@@ -110,14 +119,24 @@ def _worst_approximated(
   )
   # Only step that uses "answers", satisfies DP.
   current_errors = _compute_dp_errors(
-      rng, answers, estimates, select_budget, subset
+      rng,
+      answers,
+      estimates,
+      select_budget,
+      subset,
+      max_records_per_user=max_records_per_user,
   )
   errors.update(current_errors)
 
   current_scores = {}
   for cl in subset:
     weight = candidates[cl]
-    bias = (2 / np.pi) ** 0.5 * measure_sigma * model.domain.size(cl)
+    bias = (
+        (2 / np.pi) ** 0.5
+        * max_records_per_user
+        * measure_sigma
+        * model.domain.size(cl)
+    )
     current_scores[cl] = weight * (errors[cl] - bias)
 
   return max(current_scores, key=current_scores.get)  # pyrefly: ignore[no-matching-overload]
@@ -224,8 +243,11 @@ class AIMGDPMechanism(base.DiscreteMechanism):
     # independence model. compute_independence_errors is much faster than
     # bulk_variable_elimination for this case (pure numpy, no XLA compilation).
     budget_remaining -= 0.5 * budget_per_round
-    per_candidate_sigma = accounting.gdp_gaussian_sigma(
-        0.5 * budget_per_round / len(candidates)
+    per_candidate_sigma = (
+        self.max_records_per_user
+        * accounting.gdp_gaussian_sigma(
+            0.5 * budget_per_round / len(candidates)
+        )
     )
     errors = common.compute_independence_errors(data, model, list(candidates))  # pyrefly: ignore[bad-argument-type]
     for cl in errors:
@@ -261,6 +283,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
             select_budget=select_budget,
             measure_sigma=measure_sigma,
             max_new_evals=self.max_candidates_per_round,
+            max_records_per_user=self.max_records_per_user,
         )
 
       summary = mbi.summarize(
@@ -313,7 +336,10 @@ class AIMGDPMechanism(base.DiscreteMechanism):
       # See Alg 4 of https://arxiv.org/pdf/2201.12677.
       # of just the largest error candidate), we can maybe simplify this logic.
       threshold = (
-          measure_sigma * (2 / np.pi) ** 0.5 * domain.size(marginal_query)
+          self.max_records_per_user
+          * measure_sigma
+          * (2 / np.pi) ** 0.5
+          * domain.size(marginal_query)
       )
       if np.linalg.norm(new_estimate - old_estimate, ord=1) <= threshold:
         # No useful information at this noise level, increase budget per round.

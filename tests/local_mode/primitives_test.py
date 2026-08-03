@@ -319,5 +319,77 @@ class DPGaussianCountTest(absltest.TestCase):
     self.assertAlmostEqual(event.noise_multiplier, 1.0)
 
 
+class MaxRecordsPerUserTest(parameterized.TestCase):
+  """Tests the user-level DP knob ``max_records_per_user`` on primitives."""
+
+  def test_histogram_noise_scales_exactly_with_k(self):
+    k = 4
+    counts = np.array([10.0, 20.0, 30.0])
+    base = primitives.DPGaussianHistogram(domain_size=3).configure(zcdp_rho=1.0)
+    scaled = primitives.DPGaussianHistogram(
+        domain_size=3, max_records_per_user=k
+    ).configure(zcdp_rho=1.0)
+    base_noise = base(np.random.default_rng(0), counts).counts - counts
+    scaled_noise = scaled(np.random.default_rng(0), counts).counts - counts
+    np.testing.assert_allclose(scaled_noise, k * base_noise)
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+
+  def test_count_noise_scales_exactly_with_k(self):
+    k = 4
+    base = primitives.DPGaussianCount().configure(zcdp_rho=1.0)
+    scaled = primitives.DPGaussianCount(max_records_per_user=k).configure(
+        zcdp_rho=1.0
+    )
+    base_noise = base.noisy_count(np.random.default_rng(0), 100) - 100
+    scaled_noise = scaled.noisy_count(np.random.default_rng(0), 100) - 100
+    self.assertAlmostEqual(scaled_noise, k * base_noise)
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+
+  def test_quantiles_accounting_invariant_to_k(self):
+    base = primitives.DPQuantiles(
+        num_partitions=4, lower=0.0, upper=10.0
+    ).configure(zcdp_rho=1.0)
+    scaled = primitives.DPQuantiles(
+        num_partitions=4, lower=0.0, upper=10.0, max_records_per_user=4
+    ).configure(zcdp_rho=1.0)
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+    self.assertAlmostEqual(scaled.zcdp_rho, base.zcdp_rho)
+
+  def test_partition_selection_accounting_invariant_to_k(self):
+    base = primitives.DPPartitionSelection(delta=1e-5).configure(zcdp_rho=1.0)
+    scaled = primitives.DPPartitionSelection(
+        delta=1e-5, max_records_per_user=4
+    ).configure(zcdp_rho=1.0)
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+
+  def test_partition_selection_noise_scales_with_k(self):
+    k = 4
+    data = np.repeat(np.arange(5), 20)
+    _, _, base_std = primitives.select_partitions_gaussian_thresholding(
+        np.random.default_rng(0), data, gdp_budget=1.0, delta=1e-5
+    )
+    _, _, scaled_std = primitives.select_partitions_gaussian_thresholding(
+        np.random.default_rng(0),
+        data,
+        gdp_budget=1.0,
+        delta=1e-5,
+        max_records_per_user=k,
+    )
+    self.assertAlmostEqual(scaled_std, k * base_std)
+
+  @parameterized.named_parameters(("zero", 0), ("negative", -3))
+  def test_invalid_k_raises(self, k):
+    with self.assertRaises(ValueError):
+      primitives.DPGaussianHistogram(domain_size=3, max_records_per_user=k)
+    with self.assertRaises(ValueError):
+      primitives.DPGaussianCount(max_records_per_user=k)
+    with self.assertRaises(ValueError):
+      primitives.DPQuantiles(
+          num_partitions=4, lower=0.0, upper=10.0, max_records_per_user=k
+      )
+    with self.assertRaises(ValueError):
+      primitives.DPPartitionSelection(delta=1e-5, max_records_per_user=k)
+
+
 if __name__ == "__main__":
   absltest.main()
