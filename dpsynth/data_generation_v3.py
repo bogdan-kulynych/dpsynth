@@ -21,6 +21,7 @@ import dataclasses
 
 from absl import logging
 import dp_accounting
+from dpsynth import api
 from dpsynth import constraints
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
@@ -37,6 +38,7 @@ def _create_initializers(
     domains: Mapping[str, domain.AttributeType],
     numerical_bins: int,
     init_delta: float,
+    max_records_per_user: int = 1,
 ) -> dict[str, primitives.DPMechanism]:
   """Creates per-column initializers from the domain specification.
 
@@ -44,6 +46,10 @@ def _create_initializers(
     domains: Mapping from column names to attribute domain specifications.
     numerical_bins: Number of bins for numerical discretization.
     init_delta: Delta for open-set categorical partition selection.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Sensitivity (and hence added noise) is scaled by this
+      factor to provide user-level rather than record-level DP; the privacy
+      analysis is unchanged. Soundness relies on the caller enforcing the bound.
 
   Returns:
     A dictionary mapping column names to uncalibrated initializer instances.
@@ -55,15 +61,21 @@ def _create_initializers(
   for col, attr in domains.items():
     if isinstance(attr, domain.NumericalAttribute):
       initializers[col] = initialization.NumericalInitializer(
-          name=col, num_partitions=numerical_bins, attribute=attr
+          name=col,
+          num_partitions=numerical_bins,
+          attribute=attr,
+          max_records_per_user=max_records_per_user,
       )
     elif isinstance(attr, domain.CategoricalAttribute):
       initializers[col] = initialization.CategoricalInitializer(
-          name=col, attribute=attr
+          name=col, attribute=attr, max_records_per_user=max_records_per_user
       )
     elif isinstance(attr, domain.OpenSetCategoricalAttribute):
       initializers[col] = initialization.OpenSetCategoricalInitializer(
-          name=col, attribute=attr, delta=init_delta
+          name=col,
+          attribute=attr,
+          delta=init_delta,
+          max_records_per_user=max_records_per_user,
       )
     else:
       raise ValueError(
@@ -204,6 +216,12 @@ class TabularSynthesizer(primitives.DPMechanism):
       automatically from ``domains`` during ``configure()``.
     skip_compression: Whether to skip domain compression.
     cross_attribute_constraints: Constraints to enforce on generated data.
+    experimental_max_records_per_user: EXPERIMENTAL and subject to change.
+      Assumed upper bound on the number of records a single user contributes.
+      Values greater than 1 scale the added noise (and mechanism sensitivity) to
+      provide user-level rather than record-level DP; the privacy accounting is
+      unchanged. This bound is NOT enforced -- soundness relies on the caller
+      guaranteeing it via preprocessing.
   """
 
   domains: Mapping[str, domain.AttributeType]
@@ -215,6 +233,10 @@ class TabularSynthesizer(primitives.DPMechanism):
   initializers: dict[str, primitives.DPMechanism] | None = None
   total_count_mechanism: primitives.DPGaussianCount | None = None
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
+  experimental_max_records_per_user: int = 1
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.experimental_max_records_per_user)
 
   def configure(  # pyrefly: ignore[bad-override]
       self,
@@ -269,9 +291,24 @@ class TabularSynthesizer(primitives.DPMechanism):
         thresholding_delta / num_open_set if num_open_set > 0 else 0.0
     )
 
-    inits = self.initializers or _create_initializers(
-        self.domains, self.numerical_bins, per_col_delta
-    )
+    inits = self.initializers
+    if inits is None:
+      inits = _create_initializers(
+          self.domains,
+          self.numerical_bins,
+          per_col_delta,
+          self.experimental_max_records_per_user,
+      )
+    elif self.experimental_max_records_per_user > 1:
+      # The synthesizer's experimental_max_records_per_user is the single
+      # source of truth: the total-count and discrete mechanisms already use it,
+      # so propagate it to caller-supplied initializers too.
+      propagated = {}
+      for col, init in inits.items():
+        propagated[col] = dataclasses.replace(  # pytype: disable=wrong-arg-types
+            init, max_records_per_user=self.experimental_max_records_per_user
+        )
+      inits = propagated
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)
@@ -280,12 +317,13 @@ class TabularSynthesizer(primitives.DPMechanism):
     calibrated_inits = {
         col: init.configure(zcdp_rho=per_col_rho) for col, init in inits.items()
     }
-    calibrated_total = primitives.DPGaussianCount().configure(
-        zcdp_rho=per_col_rho
-    )
-    calibrated_discrete = self.discrete_mechanism.configure(
-        zcdp_rho=discrete_rho
-    )
+    calibrated_total = primitives.DPGaussianCount(
+        max_records_per_user=self.experimental_max_records_per_user
+    ).configure(zcdp_rho=per_col_rho)
+    calibrated_discrete = dataclasses.replace(
+        self.discrete_mechanism,
+        max_records_per_user=self.experimental_max_records_per_user,
+    ).configure(zcdp_rho=discrete_rho)
     return dataclasses.replace(
         self,
         initializers=calibrated_inits,
@@ -343,8 +381,11 @@ class TabularSynthesizer(primitives.DPMechanism):
     # Measure total count first, then run per-column initializers.
     any_col = next(iter(self.domains))
     total = max(1.0, self.total_count_mechanism(rng, data[any_col].values))
+    k = self.experimental_max_records_per_user
     total_measurement = mbi.LinearMeasurement(
-        np.array([total]), (), stddev=self.total_count_mechanism.sigma  # pyrefly: ignore[bad-argument-type]
+        np.array([total]),  # pyrefly: ignore[bad-argument-type]
+        (),
+        stddev=k * self.total_count_mechanism.sigma,  # pyrefly: ignore[unsupported-operation]
     )
 
     results: dict[str, initialization.ColumnMeasurement] = {}
