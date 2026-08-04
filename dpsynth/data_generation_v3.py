@@ -174,9 +174,9 @@ class TabularCodec:
 class DataGenerationResult:
   """Result of end-to-end DP synthetic data generation."""
 
-  codec: TabularCodec
   synthetic_data: pd.DataFrame
   discrete_mechanism_result: dm_common.DiscreteMechanismResult
+  codec: TabularCodec
 
 
 @dataclasses.dataclass
@@ -382,7 +382,7 @@ class TabularSynthesizer(primitives.DPMechanism):
     logging.info('[DPSynth]: Converted data back to original domain.')
 
     return DataGenerationResult(
-        codec=codec,
         synthetic_data=synthetic_data,
         discrete_mechanism_result=mechanism_result,
+        codec=codec,
     )
