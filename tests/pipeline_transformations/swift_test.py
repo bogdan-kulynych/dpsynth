@@ -99,6 +99,33 @@ class SwiftTest(absltest.TestCase):
     self.assertNotEmpty(round_info.l1_distances)
     self.assertNotEmpty(round_info.selected_attributes)
 
+    # Verify selection is non-deterministic across runs due to DP noise
+    attr0_selected_count = 0
+    num_runs = 10
+    for _ in range(num_runs):
+      acc = pipeline_dp.PLDBudgetAccountant(1.0, 1e-5)
+      out = data_generation.AdditionalOutput()
+      out.diagnostic_info = backend.to_collection(
+          [diagnostic_info.DiagnosticInformation()], data, "create diag info"
+      )
+      res = swift.fit_model(
+          backend,
+          acc,
+          data,
+          descriptor_col,
+          parameters,
+          workload=[(0, 1)],
+          additional_output=out,
+      )
+      acc.compute_budgets()
+      _ = list(res)
+      sel = list(list(out.diagnostic_info)[0].round_info[0].selected_attributes)
+      if (0,) in [tuple(a.attributes) for a in sel]:
+        attr0_selected_count += 1
+
+    self.assertGreater(attr0_selected_count, 0)
+    self.assertLess(attr0_selected_count, num_runs)
+
 
 if __name__ == "__main__":
   absltest.main()
