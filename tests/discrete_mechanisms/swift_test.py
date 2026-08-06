@@ -163,6 +163,12 @@ class SWIFTTest(absltest.TestCase):
     event = config.dp_event
     self.assertIsInstance(event, dp_accounting.ZCDpEvent)
 
+  def test_default_configuration_values(self):
+    config = swift.SWIFTMechanism()
+    self.assertEqual(config.max_clique_size, 1e7)
+    self.assertEqual(config.max_marginal_size, 1e6)
+    self.assertEqual(config.pgm_iters, 10_000)
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -53,9 +53,11 @@ class SWIFTMechanism(base.DiscreteMechanism):
     workload: The set of marginals to consider for the mechanism. Can be a
       mapping from cliques to their weights or just an iterable of cliques.
     max_clique_size: The maximum size (domain product) allowed for any clique in
-      the junction tree.
+      the junction tree. This is the main knob to tune to improve utility for a
+      given compute cost.
     max_marginal_size: The maximum size (domain product) of any marginal
       considered in the workload.
+    pgm_iters: Number of mirror descent iterations for PGM estimation.
     select_budget_frac: Fraction of the total budget used for selecting which
       marginals to measure.
     one_way_budget_frac: Alias for one_way_budget_fraction. Kept for backward
@@ -63,9 +65,9 @@ class SWIFTMechanism(base.DiscreteMechanism):
   """
 
   workload: Mapping[mbi.Clique, float] | Iterable[mbi.Clique] | None = None
-  max_clique_size: float = 1e9
-  max_marginal_size: float = 1e7
-  pgm_iters: int = 25_000
+  max_clique_size: float = 1e7
+  max_marginal_size: float = 1e6
+  pgm_iters: int = 10_000
   select_budget_frac: float = 0.1
   one_way_budget_fraction: float = 0.1
 
