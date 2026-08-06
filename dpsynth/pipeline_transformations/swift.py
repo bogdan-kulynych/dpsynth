@@ -176,7 +176,7 @@ def fit_model(
         mbi.marginal_oracles.message_passing_stable, jtree=jtree_obj
     )
     return mbi.estimation.MirrorDescent(
-        marginal_oracle=closed_oracle,
+        marginal_oracle=closed_oracle,  # pyrefly: ignore[bad-argument-type]
     ).estimate(
         domain_obj,
         measurements_list,

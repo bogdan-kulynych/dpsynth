@@ -155,7 +155,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     closed_oracle = functools.partial(
         mbi.marginal_oracles.message_passing_stable, jtree=jtree
     )
-    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)
+    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)  # pyrefly: ignore[bad-argument-type]
     rows = int(mbi.estimation.minimum_variance_unbiased_total(measurements))
 
     pgm_future, synth_future = None, None
