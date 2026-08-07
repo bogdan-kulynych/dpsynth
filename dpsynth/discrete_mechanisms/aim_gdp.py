@@ -185,6 +185,7 @@ class AIMGDPMechanism(base.DiscreteMechanism):
   max_candidates_per_round: int = 16
   anneal_factor: float = 4.0
   select_budget_fraction: float = 0.1
+  pgm_iters: int = 1000
   _loop_rho: float | None = dataclasses.field(default=None, repr=False)
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:

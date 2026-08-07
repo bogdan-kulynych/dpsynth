@@ -121,6 +121,7 @@ class AIMMechanism(base.DiscreteMechanism):
   max_marginal_size: float = 1e6
   anneal_factor: float = 4.0
   select_budget_fraction: float = 0.1
+  pgm_iters: int = 1000
   _loop_rho: float | None = dataclasses.field(default=None, repr=False)
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:

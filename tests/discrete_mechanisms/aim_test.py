@@ -130,6 +130,13 @@ class AIMTest(absltest.TestCase):
     )
     self.assertLess(mechanism_error, 0.05 * baseline_error)
 
+  def test_default_configuration_values(self):
+    config = aim.AIMMechanism()
+    self.assertEqual(config.pgm_iters, 1000)
+
+    gdp_config = aim_gdp.AIMGDPMechanism()
+    self.assertEqual(gdp_config.pgm_iters, 1000)
+
 
 if __name__ == "__main__":
   absltest.main()
