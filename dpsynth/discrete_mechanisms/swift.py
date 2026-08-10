@@ -53,9 +53,11 @@ class SWIFTMechanism(base.DiscreteMechanism):
     workload: The set of marginals to consider for the mechanism. Can be a
       mapping from cliques to their weights or just an iterable of cliques.
     max_clique_size: The maximum size (domain product) allowed for any clique in
-      the junction tree.
+      the junction tree. This is the main knob to tune to improve utility for a
+      given compute cost.
     max_marginal_size: The maximum size (domain product) of any marginal
       considered in the workload.
+    pgm_iters: Number of mirror descent iterations for PGM estimation.
     select_budget_frac: Fraction of the total budget used for selecting which
       marginals to measure.
     one_way_budget_frac: Alias for one_way_budget_fraction. Kept for backward
@@ -63,9 +65,9 @@ class SWIFTMechanism(base.DiscreteMechanism):
   """
 
   workload: Mapping[mbi.Clique, float] | Iterable[mbi.Clique] | None = None
-  max_clique_size: float = 1e9
-  max_marginal_size: float = 1e7
-  pgm_iters: int = 25_000
+  max_clique_size: float = 1e7
+  max_marginal_size: float = 1e6
+  pgm_iters: int = 10_000
   select_budget_frac: float = 0.1
   one_way_budget_fraction: float = 0.1
 
@@ -133,7 +135,12 @@ class SWIFTMechanism(base.DiscreteMechanism):
 
       with common.timed(phase_times, 'compute_initial_errors'):
         errors = _compute_initial_errors(
-            rng, answers, model, list(candidates), l1_error_budget  # pyrefly: ignore[bad-argument-type]
+            rng,
+            answers,  # pyrefly: ignore[bad-argument-type]
+            model,
+            list(candidates),
+            l1_error_budget,
+            max_records_per_user=self.max_records_per_user,
         )
 
       with common.timed(phase_times, 'select_queries'):
@@ -150,7 +157,7 @@ class SWIFTMechanism(base.DiscreteMechanism):
     closed_oracle = functools.partial(
         mbi.marginal_oracles.message_passing_stable, jtree=jtree
     )
-    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)
+    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)  # pyrefly: ignore[bad-argument-type]
     rows = int(mbi.estimation.minimum_variance_unbiased_total(measurements))
 
     pgm_future, synth_future = None, None
@@ -169,7 +176,11 @@ class SWIFTMechanism(base.DiscreteMechanism):
     with common.timed(phase_times, 'measurement'):
       logging.info('[SWIFT] Starting measurements.')
       new_measurements, _ = _measure_selected_marginals(
-          rng, answers, selected, budget_remaining  # pyrefly: ignore[bad-argument-type]
+          rng,
+          answers,  # pyrefly: ignore[bad-argument-type]
+          selected,
+          budget_remaining,
+          max_records_per_user=self.max_records_per_user,
       )
       measurements.extend(new_measurements)
       logging.info('[SWIFT] Finished measurements.')
@@ -307,7 +318,7 @@ def build_best_clique_tree(
 ) -> nx.Graph:
   """Builds the best clique tree by trying different penalties."""
   best_tree = None
-  best_score = 0.0
+  best_score = float('-inf')
   for penalty in penalties:
     tree = build_clique_tree(domain, errors, max_clique_size, penalty)
     # By measuring these cliques, we will be able to greatly reduce the error.
@@ -332,10 +343,13 @@ def _compute_initial_errors(
     model: mbi.MarkovRandomField,
     cliques: Sequence[mbi.Clique],
     gdp_budget: float,
+    max_records_per_user: int = 1,
 ) -> dict[mbi.Clique, float]:
   """Computes DP initial errors for the SWIFT mechanism."""
   budget_per_clique = gdp_budget / len(cliques)
-  sigma_per_clique = accounting.gdp_gaussian_sigma(budget_per_clique)
+  sigma_per_clique = max_records_per_user * accounting.gdp_gaussian_sigma(
+      budget_per_clique
+  )
   errors = common.compute_independence_errors(data, model, cliques)
   for cl in errors:
     errors[cl] += rng.normal(loc=0.0, scale=sigma_per_clique)
@@ -396,12 +410,13 @@ def _measure_selected_marginals(
     data: mbi.Projectable,
     selected: dict[mbi.Clique, float],
     budget_remaining: float,
+    max_records_per_user: int = 1,
 ) -> tuple[list[mbi.LinearMeasurement], float]:
   """Measures the selected marginal queries."""
   measurements = []
   for cl in selected:
     budget_remaining -= selected[cl]
-    sigma = accounting.gdp_gaussian_sigma(selected[cl])
+    sigma = max_records_per_user * accounting.gdp_gaussian_sigma(selected[cl])
     x = data.project(cl).datavector()
     y = x + rng.normal(loc=0.0, scale=sigma, size=x.size)
     measurements.append(mbi.LinearMeasurement(y, cl, sigma))

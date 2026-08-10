@@ -81,6 +81,7 @@ def select_partitions_gaussian_thresholding(
     gdp_budget: float,
     delta: float,
     min_count: int = 1,
+    max_records_per_user: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, float]:
   """Selects partitions using Gaussian Thresholding (Weighted Gaussian).
 
@@ -105,6 +106,15 @@ def select_partitions_gaussian_thresholding(
   boundary case (one dataset at ``min_count - 1``, the other at
   ``min_count``) is covered by the same additive delta.
 
+  When ``max_records_per_user > 1`` the mechanism switches to user-level DP
+  via a naive, conservative reduction: a single user may place all ``k``
+  records in one partition, so the histogram's L2 sensitivity grows to ``k``.
+  Both the noise standard deviation and the threshold are scaled by ``k``,
+  which is equivalent to running the item-level mechanism with ``k`` times the
+  sigma and threshold. This is sound but suboptimal -- a user->record mapping
+  would allow tighter per-user contribution bounding (e.g. capping the number
+  of distinct partitions a user touches) and hence far better utility.
+
   Args:
     rng: A numpy random number generator.
     data: 1D array of integers, where each element is a partition ID.
@@ -113,6 +123,11 @@ def select_partitions_gaussian_thresholding(
     delta: Failure probability (false positive bound per empty partition).
     min_count: Minimum true count for a partition to be eligible. Partitions
       with fewer occurrences in the data are never returned. Must be >= 1.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Added noise (and mechanism sensitivity) is scaled by
+      this factor to provide user-level rather than record-level DP; the privacy
+      accounting is unchanged. Soundness relies on the caller enforcing this
+      bound.
 
   Returns:
     A tuple containing:
@@ -120,17 +135,18 @@ def select_partitions_gaussian_thresholding(
         threshold.
       - estimated_counts: 1D array of noisy counts for each selected
         partition.
-      - sigma: The standard deviation of the Gaussian noise added.
+      - stddev: The standard deviation of the Gaussian noise added
+        (``max_records_per_user * sigma``).
   """
   if gdp_budget <= 0 or delta <= 0:
     raise ValueError(f'{gdp_budget=} and {delta=} must be positive.')
   if min_count < 1:
     raise ValueError(f'{min_count=} must be >= 1.')
 
-  sigma = 1.0 / np.sqrt(gdp_budget)
+  stddev = max_records_per_user / np.sqrt(gdp_budget)
 
   if data.size == 0:
-    return np.empty(0, dtype=data.dtype), np.empty(0, dtype=float), sigma
+    return np.empty(0, dtype=data.dtype), np.empty(0, dtype=float), stddev
 
   unique_parts, counts = np.unique(data, return_counts=True)
 
@@ -138,18 +154,22 @@ def select_partitions_gaussian_thresholding(
   above_min = counts >= min_count
   unique_parts, counts = unique_parts[above_min], counts[above_min]
   if unique_parts.size == 0:
-    return np.empty(0, dtype=data.dtype), np.empty(0, dtype=float), sigma
+    return np.empty(0, dtype=data.dtype), np.empty(0, dtype=float), stddev
 
-  noisy_counts = counts + rng.normal(scale=sigma, size=counts.size)
+  noisy_counts = counts + rng.normal(scale=stddev, size=counts.size)
 
-  # Threshold shifted by (min_count - 1) relative to the base formula.
-  # Base: T = 1 + sigma * ppf(1 - delta) bounds Pr[N(0, sigma^2) >= T] <= delta.
-  # With min_count, worst-case non-eligible count is (min_count - 1), so
-  # T' = min_count + sigma * ppf(1 - delta).
-  threshold = float(min_count) + sigma * scipy.stats.norm.ppf(1.0 - delta)
+  # A partition that is a candidate here but absent from a neighbor drives the
+  # per-partition false-positive budget `delta`. One user contributes up to
+  # k = max_records_per_user records, so (i) the noise std is
+  # stddev = k / sqrt(gdp_budget), and (ii) such a partition's true count can
+  # reach (min_count - 1) + k -- the neighbor sits just under the eligibility
+  # cutoff at min_count - 1 and the user piles all k records into it. Bounding
+  #   Pr[(min_count - 1 + k) + N(0, stddev^2) >= T] <= delta
+  # gives T = (min_count + k - 1) + stddev * ppf(1 - delta).
+  base = float(max_records_per_user + min_count - 1)
+  threshold = base + stddev * scipy.stats.norm.ppf(1.0 - delta)
   passed = noisy_counts >= threshold
-
-  return unique_parts[passed], noisy_counts[passed], sigma
+  return unique_parts[passed], noisy_counts[passed], stddev
 
 
 def _select_partitions_sips(
@@ -277,15 +297,24 @@ class DPQuantiles(DPMechanism):
     upper: Upper bound of the data domain (exclusive).
     jitter_strategy: Tie-breaking jitter passed to ``quantiles_from_histogram``:
       ``'refine'`` for integer attributes, ``'symmetric'`` for continuous ones.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Added noise (and mechanism sensitivity) is scaled by
+      this factor to provide user-level rather than record-level DP; the privacy
+      accounting is unchanged. Soundness relies on the caller enforcing this
+      bound.
   """
 
   num_partitions: int
   lower: float
   upper: float
   jitter_strategy: Literal['symmetric', 'refine'] = 'symmetric'
+  max_records_per_user: int = 1
   _epsilon_levels: tuple[float, ...] | None = dataclasses.field(
       default=None, repr=False
   )
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.max_records_per_user)
 
   @property
   def _num_levels(self) -> int:
@@ -341,7 +370,9 @@ class DPQuantiles(DPMechanism):
     indices = _quantiles.quantiles_from_histogram(
         rng,
         counts,
-        epsilon_levels=np.asarray(self._epsilon_levels),
+        epsilon_levels=(
+            np.asarray(self._epsilon_levels) / self.max_records_per_user
+        ),
         jitter_strategy=self.jitter_strategy,
     )
     # Map cell indices back to domain values; delta is the grid step, which
@@ -360,10 +391,19 @@ class DPGaussianHistogram(DPMechanism):
   Attributes:
     domain_size: Number of categories in the histogram domain.
     sigma: Gaussian noise standard deviation. Set directly or via ``configure``.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Added noise (and mechanism sensitivity) is scaled by
+      this factor to provide user-level rather than record-level DP; the privacy
+      accounting is unchanged. Soundness relies on the caller enforcing this
+      bound.
   """
 
   domain_size: int
   sigma: float | None = None
+  max_records_per_user: int = 1
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.max_records_per_user)
 
   def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
@@ -384,7 +424,9 @@ class DPGaussianHistogram(DPMechanism):
     """Adds Gaussian noise to the given counts."""
     if self.sigma is None:
       raise ValueError(_UNCALIBRATED_MSG.format(param='sigma'))
-    noise = rng.normal(scale=self.sigma, size=self.domain_size)
+    noise = rng.normal(
+        scale=self.max_records_per_user * self.sigma, size=self.domain_size
+    )
     return HistogramResult(counts=counts.astype(float) + noise)
 
 
@@ -393,6 +435,10 @@ class DPGaussianCount(DPMechanism):
   """Differentially private count via the Gaussian mechanism."""
 
   sigma: float | None = None
+  max_records_per_user: int = 1
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.max_records_per_user)
 
   def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
@@ -411,7 +457,9 @@ class DPGaussianCount(DPMechanism):
     """Returns ``true_count`` plus calibrated Gaussian noise."""
     if self.sigma is None:
       raise ValueError(_UNCALIBRATED_MSG.format(param='sigma'))
-    return float(true_count + rng.normal(scale=self.sigma))
+    return float(
+        true_count + rng.normal(scale=self.max_records_per_user * self.sigma)
+    )
 
   def __call__(self, rng: np.random.Generator, data: np.ndarray) -> float:
     """Returns a noisy count of len(data) + Gaussian noise."""
@@ -427,15 +475,28 @@ class DPPartitionSelection(DPMechanism):
   ``dp_event`` composes the Gaussian event with an ``EpsilonDeltaDpEvent``
   representing the additive thresholding delta.
 
+  When ``max_records_per_user > 1`` the mechanism uses a naive, conservative
+  user-level reduction (noise and threshold scaled by that factor): sound but
+  suboptimal, since tighter bounding would require a user->record mapping.
+
   Attributes:
     delta: Failure probability for the thresholding step.
     min_count: Minimum true count for a partition to be returned.
     sigma: Gaussian noise standard deviation. Set directly or via ``configure``.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Added noise (and mechanism sensitivity) is scaled by
+      this factor to provide user-level rather than record-level DP; the privacy
+      accounting is unchanged. Soundness relies on the caller enforcing this
+      bound.
   """
 
   delta: float
   min_count: int = 1
   sigma: float | None = None
+  max_records_per_user: int = 1
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.max_records_per_user)
 
   def configure(  # pyrefly: ignore[bad-override]
       self, *, zcdp_rho: float, delta: float = 0.0
@@ -460,7 +521,12 @@ class DPPartitionSelection(DPMechanism):
       raise ValueError(_UNCALIBRATED_MSG.format(param='sigma'))
     gdp_budget = np.inf if self.sigma == 0.0 else 1.0 / (self.sigma**2)
     parts, counts, _ = select_partitions_gaussian_thresholding(
-        rng, data, gdp_budget, self.delta, min_count=self.min_count
+        rng,
+        data,
+        gdp_budget,
+        self.delta,
+        min_count=self.min_count,
+        max_records_per_user=self.max_records_per_user,
     )
     return PartitionSelectionResult(
         selected_partitions=parts, estimated_counts=counts
@@ -486,12 +552,16 @@ class DPPartitionSelection(DPMechanism):
     above_min = counts >= self.min_count
     eligible_idx = np.where(above_min)[0]
     eligible_counts = counts[above_min].astype(float)
+    stddev = self.max_records_per_user * self.sigma
     noisy_counts = eligible_counts + rng.normal(
-        scale=self.sigma, size=len(eligible_counts)
+        scale=stddev, size=len(eligible_counts)
     )
-    threshold = float(self.min_count) + self.sigma * scipy.stats.norm.ppf(
-        1.0 - self.delta
-    )
+    # select_partitions_gaussian_thresholding; the two must stay in sync.
+    # Tight shift: one user can push a partition's count to
+    # (min_count - 1) + max_records_per_user (see that function for the
+    # full derivation).
+    base = float(self.max_records_per_user + self.min_count - 1)
+    threshold = base + stddev * scipy.stats.norm.ppf(1.0 - self.delta)
     passed = noisy_counts >= threshold
     return PartitionSelectionResult(
         selected_partitions=eligible_idx[passed],

@@ -350,5 +350,77 @@ class DataGenerationV3Test(parameterized.TestCase):
     self.assertLess(mechanism_error, 0.05 * baseline_error)
 
 
+class MaxRecordsPerUserTest(parameterized.TestCase):
+  """Tests the experimental user-level DP knob end to end."""
+
+  def _categorical_domains(self):
+    return {
+        'A': domain.CategoricalAttribute(
+            possible_values=['a', 'b', 'c'], out_of_domain_index=0
+        ),
+        'B': domain.NumericalAttribute(min_value=0, max_value=10),
+    }
+
+  def test_configure_propagates_k_to_submechanisms(self):
+    k = 5
+    calibrated = TabularSynthesizer(
+        domains=self._categorical_domains(),
+        experimental_max_records_per_user=k,
+    ).configure(zcdp_rho=100.0)
+    self.assertEqual(calibrated.experimental_max_records_per_user, k)
+    self.assertEqual(calibrated.total_count_mechanism.max_records_per_user, k)
+    self.assertEqual(calibrated.discrete_mechanism.max_records_per_user, k)
+    for init in calibrated.initializers.values():
+      self.assertEqual(init.max_records_per_user, k)
+
+  def test_dp_event_invariant_to_k(self):
+    base = TabularSynthesizer(domains=self._categorical_domains()).configure(
+        zcdp_rho=100.0
+    )
+    scaled = TabularSynthesizer(
+        domains=self._categorical_domains(), experimental_max_records_per_user=5
+    ).configure(zcdp_rho=100.0)
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+
+  def test_end_to_end_with_k(self):
+    df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
+    calibrated = TabularSynthesizer(
+        domains=self._categorical_domains(), experimental_max_records_per_user=3
+    ).configure(zcdp_rho=100.0)
+    synthetic_df = calibrated(np.random.default_rng(0), df).synthetic_data
+    self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
+
+  def test_open_set_with_k_supported(self):
+    df = pd.DataFrame({'A': ['a', 'b', 'c', 'a', 'b', 'a'] * 5})
+    domains = {'A': domain.OpenSetCategoricalAttribute()}
+    base = TabularSynthesizer(domains=domains).configure(
+        zcdp_rho=100.0, delta=1e-5
+    )
+    scaled = TabularSynthesizer(
+        domains=domains, experimental_max_records_per_user=2
+    ).configure(zcdp_rho=100.0, delta=1e-5)
+    # Accounting is byte-identical across k; only the injected noise scales.
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+    synthetic_df = scaled(np.random.default_rng(0), df).synthetic_data
+    self.assertListEqual(synthetic_df.columns.tolist(), ['A'])
+
+  def test_custom_initializers_inherit_k(self):
+    domains = self._categorical_domains()
+    inits = data_generation_v3._create_initializers(domains, 32, 0.0)
+    calibrated = TabularSynthesizer(
+        domains=domains, initializers=inits, experimental_max_records_per_user=2
+    ).configure(zcdp_rho=100.0)
+    for init in calibrated.initializers.values():
+      self.assertEqual(init.max_records_per_user, 2)
+
+  @parameterized.named_parameters(('zero', 0), ('negative', -3))
+  def test_invalid_k_raises(self, k):
+    with self.assertRaises(ValueError):
+      TabularSynthesizer(
+          domains=self._categorical_domains(),
+          experimental_max_records_per_user=k,
+      )
+
+
 if __name__ == '__main__':
   absltest.main()

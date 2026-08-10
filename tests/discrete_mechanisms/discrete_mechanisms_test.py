@@ -137,5 +137,44 @@ class CalibrationTest(parameterized.TestCase):
     self.assertIsInstance(result, common.DiscreteMechanismResult)
 
 
+class MaxRecordsPerUserTest(parameterized.TestCase):
+  """Tests the user-level DP knob ``max_records_per_user``."""
+
+  @parameterized.named_parameters(*_MECHANISMS.items())
+  def test_dp_event_invariant_to_max_records_per_user(self, mechanism):
+    # Scaling max_records_per_user must not change the accounting: only the
+    # actual noise magnitude scales, while the reported dp_event is identical.
+    base = mechanism.configure(zcdp_rho=_ZCDP_RHO)
+    scaled = dataclasses.replace(mechanism, max_records_per_user=4).configure(
+        zcdp_rho=_ZCDP_RHO
+    )
+    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+
+  @parameterized.named_parameters(
+      ('Independent', _MECHANISMS['Independent']),
+      ('Direct', _MECHANISMS['Direct']),
+  )
+  def test_measurement_stddev_scales_with_k(self, mechanism):
+    # Independent and Direct select their measured cliques deterministically,
+    # so the recorded stddevs line up one-to-one and must scale linearly in k.
+    k = 4
+    data = _make_skewed_dataset(np.random.default_rng(0))
+    base = mechanism.configure(zcdp_rho=_ZCDP_RHO)(
+        np.random.default_rng(1), data
+    )
+    scaled = dataclasses.replace(mechanism, max_records_per_user=k).configure(
+        zcdp_rho=_ZCDP_RHO
+    )(np.random.default_rng(1), data)
+    self.assertNotEmpty(base.measurements)
+    self.assertLen(scaled.measurements, len(base.measurements))
+    for base_m, scaled_m in zip(base.measurements, scaled.measurements):
+      self.assertAlmostEqual(scaled_m.stddev, k * base_m.stddev)
+
+  @parameterized.named_parameters(('zero', 0), ('negative', -3))
+  def test_invalid_k_raises(self, k):
+    with self.assertRaises(ValueError):
+      mst.MSTMechanism(max_records_per_user=k)
+
+
 if __name__ == '__main__':
   absltest.main()

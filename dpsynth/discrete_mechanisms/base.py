@@ -59,6 +59,11 @@ class DiscreteMechanism(api.DPMechanism):
     pgm_iters: Number of mirror descent iterations for estimation.
     compress_columns: Domain compression config. True = all, list = specific.
     one_way_budget_fraction: Fraction of zCDP budget for one-way marginals.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes. Added noise (and mechanism sensitivity) is scaled by
+      this factor to provide user-level rather than record-level DP; the privacy
+      accounting is unchanged. Soundness relies on the caller enforcing this
+      bound.
     zcdp_rho: Total zCDP budget (set by configure).
     one_way_rho: zCDP budget for one-way measurements (set by configure).
     measurement_rho: zCDP budget for selected marginal measurements.
@@ -68,9 +73,13 @@ class DiscreteMechanism(api.DPMechanism):
   pgm_iters: int = 5000
   compress_columns: bool | Sequence[str] = False
   one_way_budget_fraction: float = 1 / 3
+  max_records_per_user: int = 1
   zcdp_rho: float | None = None
   one_way_rho: float | None = dataclasses.field(default=None, repr=False)
   measurement_rho: float | None = dataclasses.field(default=None, repr=False)
+
+  def __post_init__(self):
+    api.validate_max_records_per_user(self.max_records_per_user)
 
   @abc.abstractmethod
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
@@ -164,7 +173,13 @@ class DiscreteMechanism(api.DPMechanism):
     with common.timed(phase_times, 'measurement'):
       sigma = accounting.zcdp_gaussian_sigma(self.one_way_rho)
       cliques = self._one_way_cliques(data)
-      return common.measure_marginals_with_noise(rng, data, cliques, sigma)
+      return common.measure_marginals_with_noise(
+          rng,
+          data,
+          cliques,
+          sigma,
+          max_records_per_user=self.max_records_per_user,
+      )
 
   def _compress(self, data, measurements, constraints):
     """Compresses the domain by merging rare values."""
@@ -238,7 +253,11 @@ class DiscreteMechanism(api.DPMechanism):
       with common.timed(phase_times, 'measurement'):
         sigma = accounting.zcdp_gaussian_sigma(self.measurement_rho)  # pyrefly: ignore[bad-argument-type]
         measurements = measurements + common.measure_marginals_with_noise(
-            rng, data, selected, sigma
+            rng,
+            data,
+            selected,
+            sigma,
+            max_records_per_user=self.max_records_per_user,
         )
 
     with common.timed(phase_times, 'estimation'):

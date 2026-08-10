@@ -97,6 +97,19 @@ class SWIFTTest(absltest.TestCase):
     self.assertAlmostEqual(selected[('a', 'c')], expected_budget_ac)
     self.assertAlmostEqual(selected[('b', 'c')], expected_budget_bc)
 
+  def test_select_queries_nonpositive_errors(self):
+    errors = {('a', 'b'): 0.0, ('b', 'c'): -1.0, ('a', 'c'): -2.0}
+    domain = mbi.Domain(['a', 'b', 'c'], [2, 3, 4])
+    candidates = {key: 1.0 for key in errors}
+    gdp_budget = 100.0
+
+    selected, jtree = swift.select_queries(
+        errors, candidates, domain, max_clique_size=100, gdp_budget=gdp_budget
+    )
+
+    self.assertNotEmpty(jtree.nodes)
+    self.assertAlmostEqual(sum(selected.values()), gdp_budget)
+
   def test_best_subset_and_allocation(self):
     candidates = [
         swift_utils.Candidate(id='a', error=1.0, size=1.0, weight=1.0),
@@ -149,6 +162,12 @@ class SWIFTTest(absltest.TestCase):
     config = swift.SWIFTMechanism().configure(zcdp_rho=1.0)
     event = config.dp_event
     self.assertIsInstance(event, dp_accounting.ZCDpEvent)
+
+  def test_default_configuration_values(self):
+    config = swift.SWIFTMechanism()
+    self.assertEqual(config.max_clique_size, 1e7)
+    self.assertEqual(config.max_marginal_size, 1e6)
+    self.assertEqual(config.pgm_iters, 10_000)
 
 
 if __name__ == '__main__':

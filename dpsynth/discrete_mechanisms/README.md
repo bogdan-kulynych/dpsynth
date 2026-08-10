@@ -2,73 +2,127 @@
 
 <!-- disableFinding(LINK_RELATIVE_G3DOC) -->
 
-This directory contains implementations of several Differentially Private (DP)
-mechanisms that operate over **discrete** synthetic tabular data. These
-mechanisms follow the SELECT-MEASURE-GENERATE paradigm to produce synthetic data
-that approximates the true distribution while satisfying differential privacy.
+Discrete mechanisms are the core in-memory synthesis algorithms in DPSynth. They
+generate differentially private synthetic tabular data by learning a
+probabilistic model of an already discretized dataset.
 
-In addition to providing standalone mechanisms, this package serves as a
-critical **utility provider** for the rest of the project.
+Rather than copying or perturbing individual records, a mechanism privately
+measures aggregate statistics—called **marginals**—over one or more columns. It
+then uses those noisy measurements to fit a graphical model
+(`mbi.MarkovRandomField`) and samples new synthetic records from that model.
 
-## Core Roles & Module Interactions
+At a high level, every discrete mechanism follows this pattern:
 
-### 1. Local Mechanism Execution
+```text
+encoded sensitive data
+    -> measure one-way marginals
+    -> optionally compress rare values
+    -> select useful additional marginals
+    -> measure them with DP noise
+    -> estimate a graphical model
+    -> sample synthetic discrete records
+```
 
-This directory provides the "brains" for local, in-memory data synthesis. The
-primary entry point is `run_mechanism` (in [api.py](api.py)), which orchestrates
-specific algorithms (AIM, MST, etc.) on single-machine datasets (typically
-loaded via Pandas or NumPy).
+## `base.py` — Shared execution pipeline
 
-### 2. Common Utility Provider
+**Role:** Owns the common Select-Measure-Estimate lifecycle.
 
-The [common.py](common.py) module provides essential logic used project-wide:
+**Main logic:** Calibrates privacy budget, obtains initial one-way measurements,
+compresses domains, runs selection/measurement/estimation, decompresses sampled
+data, and returns `DiscreteMechanismResult`.
 
-*   **Domain Compression**: Implements the logic to calculate DP one-way
-    marginals and merge rare values into an "Other" category. This is heavily
-    relied upon by the `DatasetDescriptor.compress()` logic and distributed
-    pipelines.
-*   **DP Primitives**: Implements the Exponential mechanism and Gaussian
-    mechanism logic used by various components.
+**Public API:** `DiscreteMechanism.configure()`
 
-### 3. Integration with `mbi`
+## `common.py` — Main Shared Utility Layer
 
-All mechanisms in this package are built on top of the `mbi` library:
+This is the main utility module for the discrete-mechanism workflow. It provides
+the reusable operations used across mechanisms: noisy marginal measurement,
+workload and clique helpers, domain compression, timing, and diagnostics. It
+also defines `DiscreteMechanismResult`, returned by every mechanism, and
+`MechanismDiagnostics`. Add generic logic here only when it is shared by
+multiple mechanisms; keep selection policy in individual mechanism files.
 
-*   **Inputs**: Mechanisms consume `mbi.Projectable` objects (discrete data).
-*   **Outputs**: Mechanisms produce `mbi.MarkovRandomField` objects, which model
-    the approximated distribution and are used to sample synthetic records.
+## `independent.py` - One-Way Baseline
 
-### 4. Privacy Accounting
+Implements `IndependentMechanism`, the simplest mechanism. It uses the shared
+workflow from `base.py`, spends its budget on one-way marginals, and selects no
+additional cliques. The resulting model preserves each column's distribution but
+does not model relationships between columns.
 
-The [accounting.py](accounting.py) module serves as the bridge between
-high-level user privacy parameters (epsilon, delta) and the internal `sigma`
-values required by the Gaussian mechanisms.
+**Public API:** `IndependentMechanism`
 
-## Relationship to Other Packages
+## `direct.py` — Caller-Defined Workload
 
-*   **[dataset_descriptors/](../dataset_descriptors/)**: Provides the
-    `DatasetDescriptor.encode()` method which produces the discrete
-    integer-encoded data that these mechanisms require.
-*   **[pipeline_transformations/](../pipeline_transformations/)**: Contains
-    distributed, production-scale implementations of these same algorithms
-    (using Apache Beam). Many pipeline transformations reuse the mathematical
-    utilities defined here.
+Implements `DirectMechanism`, which measures the cliques supplied through
+`prespecified_marginal_queries`. It performs no data-dependent selection and
+does not create its own one-way measurements, so the full budget is available
+for the specified workload. Initial measurements supplied by another layer are
+included when fitting the final model.
 
-## Mechanisms Implemented
+**Public API:** `DirectMechanism(prespecified_marginal_queries=...)`
 
-*   **Adaptive+Iterative Mechanism (AIM)** (`aim.py`, `aim_gdp.py`): An
-    MWEM-style algorithm that iteratively improves the estimation of the data
-    distribution.
-*   **Maximum Spanning Tree (MST)** (`mst.py`): Computes an approximate maximum
-    spanning tree to model pairwise correlations privately.
-*   **Direct Mechanism** (`direct.py`): Measures user-prespecified two-way
-    marginals and fits a distribution via mirror descent.
-*   **Independent Mechanism** (`independent.py`): A baseline approach that
-    models all attributes as independent.
+## `mst.py` — Private Pairwise Spanning-Tree Selection
 
-## Utilities and Privacy Accounting
+Implements `MSTMechanism`, the default general-purpose mechanism for preserving
+pairwise relationships. It begins with one-way marginals, privately selects
+pairwise cliques forming a maximum spanning tree, measures those cliques, and
+uses the shared base pipeline to estimate the final model.
 
-*   **`common.py`**: Shared logic for exponential mechanisms, measurement
-    noising, and domain compression.
-*   **`accounting.py`**: Translation layer for DP budget accounting (zCDP, GDP,
-    Approximate DP).
+**Public API:** `MSTMechanism`
+
+**Internal behavior:** `_allocate_budget()` splits remaining rho between private
+selection and measurement; `_select()` calls the spanning-tree selection logic.
+`dp_maximum_spanning_tree()` and `_select_two_way_marginal_queries()` implement
+the private pairwise-selection step.
+
+## `aim.py` — Adaptive Iterative Selection
+
+Implements `AIMMechanism`, an adaptive workload-based mechanism. Instead of
+selecting cliques once, it repeatedly finds a marginal that the current model
+approximates poorly, measures it, and updates the model.
+
+**Public API:** `AIMMechanism(workload=...)`
+
+**Internal behavior:** `_one_way_cliques()` limits initial measurements to the
+workload; `_allocate_budget()` reserves rho for the adaptive loop; `_run()`
+replaces the standard base execution path. Helper functions filter valid
+candidates and privately choose the worst-approximated marginal.
+
+## `aim_gdp.py` — AIM with GDP-Oriented Allocation
+
+Implements `AIMGDPMechanism`, a variant of AIM with the same adaptive workflow
+but GDP units for its internal loop budgeting. It is useful when its alternative
+privacy-accounting behavior is preferred.
+
+**Public API:** `AIMGDPMechanism(workload=...)`
+
+**Internal behavior:** Like `aim.py`, it overrides `_one_way_cliques()`,
+`_allocate_budget()`, and `_run()`. Its internal helpers compute GDP-aware error
+scores and select the next workload marginal.
+
+## `swift.py` — Workload and Clique-Tree Mechanism
+
+Implements `SWIFTMechanism`, a workload-informed mechanism that selects
+marginals while controlling clique-tree complexity. It uses a custom
+junction-tree-aware estimation and sampling path rather than the standard
+one-pass implementation in `base.py`.
+
+**Public API:** `SWIFTMechanism(workload=...)`
+
+**Internal behavior:** `_allocate_budget()` splits rho between selection and
+measurement; `_run()` compiles the workload, selects supported cliques, builds a
+clique tree, measures selected marginals, and estimates the final model.
+Module-level clique-tree construction and query-selection functions support this
+workflow and are internal implementation details.
+
+## `clique_tree.py` and `swift_utils.py` — SWIFT Support Logic
+
+These files contain utilities used only by SWIFT. `clique_tree.py` builds and
+updates clique-tree structures while preserving support for selected marginals.
+`swift_utils.py` represents candidate subsets and chooses a feasible subset and
+budget allocation under SWIFT's model-size constraints.
+
+## `accounting.py` — Legacy Privacy Conversions
+
+Contains zCDP/GDP conversion helpers still used by the current mechanisms. New
+conversion logic is expected to migrate to the external `dp_accounting` API.

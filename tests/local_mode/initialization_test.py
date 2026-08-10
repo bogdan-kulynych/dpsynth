@@ -690,5 +690,56 @@ class NumericalInitializerFromSummaryTest(absltest.TestCase):
     self.assertIsNotNone(cm_summary.measurement)
 
 
+class MaxRecordsPerUserTest(parameterized.TestCase):
+  """Tests the user-level DP knob ``max_records_per_user`` on initializers."""
+
+  def test_categorical_stddev_scales_with_k(self):
+    attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
+    data = np.array(['a', 'b', 'c', 'a'])
+    base = initialization.CategoricalInitializer(
+        name='x', attribute=attr
+    ).configure(zcdp_rho=1.0)
+    scaled = initialization.CategoricalInitializer(
+        name='x', attribute=attr, max_records_per_user=4
+    ).configure(zcdp_rho=1.0)
+    b = base(np.random.default_rng(0), data)
+    s = scaled(np.random.default_rng(0), data)
+    self.assertAlmostEqual(s.measurement.stddev, 4 * b.measurement.stddev)
+
+  def test_numerical_heuristic_stddev_scales_with_k(self):
+    attr = domain.NumericalAttribute(min_value=0, max_value=10)
+    data = np.arange(10, dtype=float)
+    base = initialization.NumericalInitializer(
+        name='x', num_partitions=4, attribute=attr
+    ).configure(zcdp_rho=1.0)
+    scaled = initialization.NumericalInitializer(
+        name='x', num_partitions=4, attribute=attr, max_records_per_user=4
+    ).configure(zcdp_rho=1.0)
+    b = base(np.random.default_rng(0), data, estimated_total=100.0)
+    s = scaled(np.random.default_rng(0), data, estimated_total=100.0)
+    self.assertAlmostEqual(s.measurement.stddev, 4 * b.measurement.stddev)
+
+  def test_open_set_stddev_scales_with_k(self):
+    attr = domain.OpenSetCategoricalAttribute()
+    data = np.array(['a'] * 50 + ['b'] * 40 + ['c'] * 30)
+    base = initialization.OpenSetCategoricalInitializer(
+        name='x', attribute=attr, delta=1e-5
+    ).configure(zcdp_rho=1.0)
+    scaled = initialization.OpenSetCategoricalInitializer(
+        name='x', attribute=attr, delta=1e-5, max_records_per_user=4
+    ).configure(zcdp_rho=1.0)
+    b = base(np.random.default_rng(0), data)
+    s = scaled(np.random.default_rng(0), data)
+    self.assertAlmostEqual(s.measurement.stddev, 4 * b.measurement.stddev)
+
+  @parameterized.named_parameters(('zero', 0), ('negative', -3))
+  def test_invalid_k_raises(self, k):
+    attr = domain.CategoricalAttribute(possible_values=['a', 'b'])
+    with self.assertRaises(ValueError):
+      initialization.CategoricalInitializer(
+          name='x', attribute=attr, max_records_per_user=k
+      )
+
+
 if __name__ == '__main__':
   absltest.main()

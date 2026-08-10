@@ -66,16 +66,17 @@ def _worst_approximated(
     eps: float,
     sigma: float,
     domain: mbi.Domain,
+    max_records_per_user: int = 1,
 ) -> mbi.Clique:
   """Returns the worst approximated candidate in the given candidates."""
   errors = {}
   for cl in candidates:
     wgt = candidates[cl]
     diff = answers[cl].datavector() - estimates[cl].datavector()
-    bias = jnp.sqrt(2 / jnp.pi) * sigma * domain.size(cl)
+    bias = jnp.sqrt(2 / jnp.pi) * max_records_per_user * sigma * domain.size(cl)
     errors[cl] = wgt * (jnp.linalg.norm(diff, ord=1) - bias)
 
-  max_sensitivity = max(
+  max_sensitivity = max_records_per_user * max(
       candidates.values(),
   )  # if all weights are 0, could be a problem
   keys, values = list(errors.keys()), np.array(list(errors.values()))
@@ -120,6 +121,7 @@ class AIMMechanism(base.DiscreteMechanism):
   max_marginal_size: float = 1e6
   anneal_factor: float = 4.0
   select_budget_fraction: float = 0.1
+  pgm_iters: int = 1000
   _loop_rho: float | None = dataclasses.field(default=None, repr=False)
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
@@ -198,6 +200,7 @@ class AIMMechanism(base.DiscreteMechanism):
             epsilon,
             sigma,
             data.domain,
+            max_records_per_user=self.max_records_per_user,
         )
 
       summary = mbi.summarize(
@@ -220,7 +223,11 @@ class AIMMechanism(base.DiscreteMechanism):
       ######################################################################
       with common.timed(phase_times, 'measurement'):
         measurement = common.measure_marginals_with_noise(
-            rng, data, [marginal_query], sigma  # pyrefly: ignore[bad-argument-type]
+            rng,
+            data,  # pyrefly: ignore[bad-argument-type]
+            [marginal_query],  # pyrefly: ignore[bad-argument-type]
+            sigma,
+            max_records_per_user=self.max_records_per_user,
         )[0]
         measurements.append(measurement)
         old_estimate = model.project(marginal_query).datavector()
@@ -247,7 +254,12 @@ class AIMMechanism(base.DiscreteMechanism):
       ##########################################
       # Anneal epsilon and sigma if necessary. #
       ##########################################
-      threshold = sigma * np.sqrt(2 / np.pi) * data.domain.size(marginal_query)
+      threshold = (
+          self.max_records_per_user
+          * sigma
+          * np.sqrt(2 / np.pi)
+          * data.domain.size(marginal_query)
+      )
       if np.linalg.norm(new_estimate - old_estimate, ord=1) <= threshold:
         # No useful information at this noise level, increase budget per round.
         rho_per_round *= self.anneal_factor  # pyrefly: ignore[unsupported-operation]
