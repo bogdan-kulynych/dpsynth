@@ -60,7 +60,13 @@ _TRAIN = flags.DEFINE_bool('train', True, 'Whether to DP-fine-tune the model.')
 _SAMPLE = flags.DEFINE_bool(
     'sample', True, 'Whether to generate synthetic abstracts.'
 )
-_ITERATIONS = flags.DEFINE_integer('iterations', 200, 'DP-SGD iterations.')
+_ITERATIONS = flags.DEFINE_integer('iterations', 1000, 'Training steps.')
+_MICROBATCH_SIZE = flags.DEFINE_integer(
+    'microbatch_size',
+    8,
+    'Microbatch size for gradient clipping.',
+    lower_bound=1,
+)
 _EPSILON = flags.DEFINE_float('epsilon', 8.0, 'Target DP epsilon.')
 _DELTA = flags.DEFINE_float('delta', 1e-5, 'Target DP delta.')
 _LORA_RANK = flags.DEFINE_integer('lora_rank', 16, 'LoRA rank.')
@@ -68,7 +74,7 @@ _MAX_SEQ_LENGTH = flags.DEFINE_integer('max_seq_length', 512, 'Max tokens.')
 _LEARNING_RATE = flags.DEFINE_float(
     'learning_rate', 1e-4, 'AdamW learning rate.'
 )
-_NUM_SAMPLES = flags.DEFINE_integer('num_samples', 8, 'Abstracts to generate.')
+_NUM_SAMPLES = flags.DEFINE_integer('num_samples', 64, 'Abstracts to generate.')
 _MAX_OUT_LENGTH = flags.DEFINE_integer(
     'max_out_length', 512, 'Max output tokens.'
 )
@@ -83,7 +89,7 @@ _DATA_PATH = flags.DEFINE_string(
     'abstracts are downloaded from the HuggingFace Hub instead.',
 )
 
-_INSTRUCTION = 'Write the abstract of a biomedical research paper.'
+_INSTRUCTION = 'Write the abstract of a research paper.'
 _DATASET = 'ccdv/pubmed-summarization'
 
 
@@ -121,7 +127,9 @@ def train() -> dp_sft.FineTuneResult:
       lora_rank=_LORA_RANK.value,
       max_seq_length=_MAX_SEQ_LENGTH.value,
       optimizer=optax.adamw(_LEARNING_RATE.value),
-      performance_flags=execution_plan.PerformanceFlags(microbatch_size=1),
+      performance_flags=execution_plan.PerformanceFlags(
+          microbatch_size=_MICROBATCH_SIZE.value
+      ),
   ).calibrate(epsilon=_EPSILON.value, delta=_DELTA.value)
 
   logging.info('DP fine-tuning on %d abstracts...', len(train_data))
