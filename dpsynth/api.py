@@ -182,6 +182,7 @@ class DPMechanism(abc.ABC):
         target_epsilon=target_epsilon,
         target_delta=target_delta,
     )
+
     # RDP can also be better than PLD in some cases due to looseness in the
     # handling of certain DpEvents like the ExponentialMechanismDpEvent.
     return min(rho, rho2)
@@ -192,6 +193,7 @@ class DPMechanism(abc.ABC):
       epsilon: float | None = None,
       delta: float | None = None,
       zcdp_rho: float | None = None,
+      poisson_sampling_prob: float = 1.0,
       **kwargs: Any,
   ) -> DPMechanism:
     """Calibrate the mechanism to a target (epsilon, delta)-DP guarantee.
@@ -208,6 +210,9 @@ class DPMechanism(abc.ABC):
       epsilon: Target epsilon for (epsilon, delta)-DP.
       delta: Target delta for (epsilon, delta)-DP.
       zcdp_rho: Deprecated. Direct zCDP budget. Use ``configure()`` instead.
+      poisson_sampling_prob: If specified, calibrate the mechanism assuming the
+        input data is subsampleed with the given probability. The actual
+        sampling is **NOT** handled internally by the calibrated mechanism.
       **kwargs: Forwarded to ``configure()``.
 
     Returns:
@@ -233,10 +238,13 @@ class DPMechanism(abc.ABC):
     if epsilon is None or delta is None:
       raise ValueError('Must specify both epsilon and delta, or zcdp_rho.')
 
+    def make_event_fn(rho: float) -> dp_accounting.DpEvent:
+      base = self.configure(zcdp_rho=rho, delta=delta, **kwargs).dp_event
+      sampled = dp_accounting.PoissonSampledDpEvent(poisson_sampling_prob, base)
+      return base if poisson_sampling_prob == 1.0 else sampled
+
     optimal_rho = self._find_optimal_rho(
-        make_event_fn=lambda rho: self.configure(
-            zcdp_rho=rho, delta=delta, **kwargs
-        ).dp_event,
+        make_event_fn=make_event_fn,
         target_epsilon=epsilon,
         target_delta=delta,
     )

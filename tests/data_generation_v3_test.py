@@ -18,6 +18,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import dp_accounting
 from dpsynth import data_generation_v3
+from dpsynth import discrete_mechanisms
 from dpsynth import domain
 import numpy as np
 import pandas as pd
@@ -279,6 +280,36 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
       TabularSynthesizer(
           domains=self._categorical_domains(),
           experimental_max_records_per_user=k,
+      )
+
+  def test_poisson_calibrate_with_categorical_domains_and_gdp_mech(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
+        'B': domain.CategoricalAttribute(possible_values=['x', 'y', 'z']),
+    }
+    config = TabularSynthesizer(
+        domains=domains,
+        discrete_mechanism=discrete_mechanisms.IndependentMechanism(),
+    )
+    mechanism = config.calibrate(
+        epsilon=1.0,
+        delta=1e-6,
+        poisson_sampling_prob=0.1,
+    )
+    self.assertIsNotNone(mechanism)
+
+  def test_poisson_calibrate_with_mixed_domains(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
+        'B': domain.NumericalAttribute(min_value=0, max_value=10),
+        'C': domain.OpenSetCategoricalAttribute(),
+    }
+    config = TabularSynthesizer(domains=domains)
+    with self.assertRaises(dp_accounting.UnsupportedEventError):
+      _ = config.calibrate(
+          epsilon=1.0,
+          delta=1e-6,
+          poisson_sampling_prob=0.1,
       )
 
 
