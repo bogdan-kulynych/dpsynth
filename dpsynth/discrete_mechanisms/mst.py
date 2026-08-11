@@ -87,7 +87,7 @@ def dp_maximum_spanning_tree(
   candidates = list(weights.keys())
   r = len(list(nx.connected_components(tree)))
   if exponential_mechanism_epsilon is None:
-    exponential_mechanism_epsilon = np.sqrt(8 * zcdp_rho / (r - 1))  # pyrefly: ignore[unsupported-operation]
+    exponential_mechanism_epsilon = np.sqrt(8 * zcdp_rho / max(r - 1, 1))  # pyrefly: ignore[unsupported-operation]
   for _ in range(r - 1):
     candidates = [e for e in candidates if not ds.connected(*e)]
     wgts = np.array([weights[e] for e in candidates])

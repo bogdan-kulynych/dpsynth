@@ -80,3 +80,7 @@ namespaces = false
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 pythonpath = ["."]
+filterwarnings = [
+    "ignore:.*JAX is running in float32 mode.*:UserWarning",
+    "ignore:.*JAX persistent compilation cache is enabled.*:UserWarning",
+]

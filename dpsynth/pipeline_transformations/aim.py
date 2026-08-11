@@ -337,15 +337,9 @@ def _create_new_model(
     pgm_iters: int,
 ) -> mbi.Model:
   """Adds measurements to the model and running mirror descent."""
-  measurements = copy.copy(measurements)
-  n_measurement_in_model = len(model.potentials.cliques)
-  new_measurements = measurements[n_measurement_in_model:]
-  new_measured_cliques = list(set(m.clique for m in new_measurements))
-  warm_start = model.potentials.expand(new_measured_cliques)
-  new_model = mbi.estimation.MirrorDescent().estimate(
+  return mbi.estimation.MirrorDescent().estimate(
       model.domain,
-      measurements,
-      potentials=warm_start,
+      copy.copy(measurements),
+      warm_start=model,
       iters=pgm_iters,
   )
-  return new_model

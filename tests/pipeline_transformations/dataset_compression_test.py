@@ -39,10 +39,10 @@ class DatasetCompressionTest(absltest.TestCase):
     # Input data: 2 columns:
     #  - first column 0, 1 are rare values, 2, 3, 4 not rare
     #  - second column 1, 2 are rare values, 0, 3, 4 not rare
-    input_data = [(2, 0), (4, 3), (3, 4)] * 50
-    expected_compressed_data = [(0, 0), (2, 1), (1, 2)] * 50
+    input_data = [(2, 0), (4, 3), (3, 4)] * 1000
+    expected_compressed_data = [(0, 0), (2, 1), (1, 2)] * 1000
     accountant = pipeline_dp.NaiveBudgetAccountant(
-        total_epsilon=1.0, total_delta=1e-10
+        total_epsilon=100.0, total_delta=1e-10
     )
     backend = pipeline_dp.LocalBackend()
     dp_engine = pipeline_dp.DPEngine(accountant, backend)

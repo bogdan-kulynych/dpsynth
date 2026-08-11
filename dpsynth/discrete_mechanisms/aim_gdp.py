@@ -317,12 +317,10 @@ class AIMGDPMechanism(base.DiscreteMechanism):
       #####################################################
       with common.timed(phase_times, 'estimation'):
         callback_fn = mbi.callbacks.default(measurements, domain)
-        measured_cliques = list(set(m.clique for m in measurements))
-        warm_start = model.potentials.expand(measured_cliques)
         model = estimator.estimate(
             domain,
             measurements,
-            potentials=warm_start,
+            warm_start=model,
             iters=self.pgm_iters,
             callback_fn=callback_fn,
             constraints=constraints,

@@ -313,13 +313,13 @@ class ComputeMarginalsTest(absltest.TestCase):
 
     # 1-way: color [a=2, b=2, c=2].
     np.testing.assert_array_equal(
-        cv.arrays[('color',)].datavector(),
+        cv.tables[('color',)].datavector(),
         [2, 2, 2],
     )
     # 1-way: size total equals number of rows.
-    self.assertEqual(cv.arrays[('size',)].datavector().sum(), 6)
+    self.assertEqual(cv.tables[('size',)].datavector().sum(), 6)
     # 2-way: shape matches product of column sizes, total equals rows.
-    joint = cv.arrays[('color', 'size')]
+    joint = cv.tables[('color', 'size')]
     expected_size = cms['color'].categorical_attribute.size
     expected_size *= cms['size'].categorical_attribute.size
     self.assertEqual(joint.domain.size(), expected_size)

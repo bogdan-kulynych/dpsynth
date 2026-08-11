@@ -70,7 +70,7 @@ class SupportingCliquesSufficiencyTest(parameterized.TestCase):
     data = mbi.Dataset.synthetic(domain, N=500)
     rng = np.random.default_rng(42)
 
-    calibrated = mechanism.calibrate(zcdp_rho=_ZCDP_RHO)
+    calibrated = mechanism.configure(zcdp_rho=_ZCDP_RHO)
     cliques = calibrated.supporting_cliques(domain)
 
     precomputed = mbi.CliqueVector.from_projectable(data, cliques)
