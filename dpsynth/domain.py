@@ -51,6 +51,7 @@ import pathlib
 
 from typing import Any, Literal, TypeAlias
 
+from absl import logging
 import numpy as np
 import yaml
 
@@ -308,7 +309,9 @@ def to_yaml_file(domain: Mapping[str, AttributeType], filepath: str | PathType):
   """Writes a dictionary of Attribute objects to a YAML file."""
   yaml_data = {}
   for name, attr_obj in domain.items():
-    yaml_data[name] = dataclasses.asdict(attr_obj)
+    attr_data = dataclasses.asdict(attr_obj)
+    attr_data['type'] = attr_obj.__class__.__name__
+    yaml_data[name] = attr_data
   with open(filepath, 'w') as f:
     yaml.dump(yaml_data, f, default_flow_style=False)
 
@@ -318,9 +321,14 @@ def from_yaml_file(filepath: str | PathType) -> Mapping[str, AttributeType]:
   with open(filepath, 'r') as f:
     yaml_data = yaml.safe_load(f)
   domain = {}
+
   for name, attr_data in yaml_data.items():
-    # attr_data is a dictionary mapping dataclass fields to values. We match on
-    # the presence of certain fields to determine the attribute type.
+    attr_type = attr_data.pop('type', None)
+    if attr_type is None:
+      logging.warning(
+          'Field "type" missing in domain YAML; re-save using `to_yaml_file`.'
+          'In the future, missing this field will raise an error.'
+      )
     if 'possible_values' in attr_data:
       domain[name] = CategoricalAttribute(**attr_data)
     elif 'min_value' in attr_data:
@@ -331,4 +339,5 @@ def from_yaml_file(filepath: str | PathType) -> Mapping[str, AttributeType]:
       domain[name] = OpenSetCategoricalAttribute(**attr_data)
     else:
       raise ValueError(f'Invalid YAML data for attribute: {name}')
+
   return domain
