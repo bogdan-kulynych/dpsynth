@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import dataclasses
+import math
 
 from absl import logging
 import dp_accounting
@@ -39,7 +40,7 @@ def _create_initializers(
     numerical_bins: int,
     init_delta: float,
     max_records_per_user: int = 1,
-) -> dict[str, primitives.DPMechanism]:
+) -> dict[str, api.DPMechanism]:
   """Creates per-column initializers from the domain specification.
 
   Args:
@@ -191,7 +192,7 @@ class DataGenerationResult:
 
 
 @dataclasses.dataclass
-class TabularSynthesizer(primitives.DPMechanism):
+class TabularSynthesizer(api.DPMechanism):
   """End-to-end DP synthetic data generation mechanism.
 
   This mechanism encodes input categorical and numerical data into a discrete
@@ -230,8 +231,8 @@ class TabularSynthesizer(primitives.DPMechanism):
   )
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
-  initializers: dict[str, primitives.DPMechanism] | None = None
-  total_count_mechanism: primitives.DPGaussianCount | None = None
+  initializers: dict[str, api.DPMechanism] | None = None
+  total_count_sigma: float | None = dataclasses.field(default=None, repr=False)
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
   experimental_max_records_per_user: int = 1
 
@@ -305,7 +306,7 @@ class TabularSynthesizer(primitives.DPMechanism):
       # so propagate it to caller-supplied initializers too.
       propagated = {}
       for col, init in inits.items():
-        propagated[col] = dataclasses.replace(  # pytype: disable=wrong-arg-types
+        propagated[col] = dataclasses.replace(  # pyrefly: ignore[bad-specialization]
             init, max_records_per_user=self.experimental_max_records_per_user
         )
       inits = propagated
@@ -317,9 +318,7 @@ class TabularSynthesizer(primitives.DPMechanism):
     calibrated_inits = {
         col: init.configure(zcdp_rho=per_col_rho) for col, init in inits.items()
     }
-    calibrated_total = primitives.DPGaussianCount(
-        max_records_per_user=self.experimental_max_records_per_user
-    ).configure(zcdp_rho=per_col_rho)
+    total_count_sigma = math.sqrt(0.5 / per_col_rho)
     calibrated_discrete = dataclasses.replace(
         self.discrete_mechanism,
         max_records_per_user=self.experimental_max_records_per_user,
@@ -328,7 +327,7 @@ class TabularSynthesizer(primitives.DPMechanism):
         self,
         initializers=calibrated_inits,
         discrete_mechanism=calibrated_discrete,
-        total_count_mechanism=calibrated_total,
+        total_count_sigma=total_count_sigma,
     )
 
   @property
@@ -341,12 +340,14 @@ class TabularSynthesizer(primitives.DPMechanism):
     Raises:
       ValueError: If configure() has not been called.
     """
-    if self.initializers is None or self.total_count_mechanism is None:
+    if self.initializers is None or self.total_count_sigma is None:
       raise ValueError(
           'Must call configure() or calibrate() before accessing dp_event.'
       )
     events = [init.dp_event for init in self.initializers.values()]
-    events.append(self.total_count_mechanism.dp_event)
+    events.append(
+        dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
+    )
     events.append(self.discrete_mechanism.dp_event)
     return dp_accounting.ComposedDpEvent(events)
 
@@ -367,7 +368,7 @@ class TabularSynthesizer(primitives.DPMechanism):
       ValueError: If configure() has not been called or if required columns are
         missing from the input data.
     """
-    if self.initializers is None or self.total_count_mechanism is None:
+    if self.initializers is None or self.total_count_sigma is None:
       raise ValueError(
           'Must call configure() or calibrate() before running the mechanism.'
       )
@@ -379,19 +380,25 @@ class TabularSynthesizer(primitives.DPMechanism):
 
     # Phase 1: Per-column initialization.
     # Measure total count first, then run per-column initializers.
-    any_col = next(iter(self.domains))
-    total = max(1.0, self.total_count_mechanism(rng, data[any_col].values))
+
+    noisy_total = primitives.add_gaussian_noise(
+        rng,
+        len(data),
+        self.total_count_sigma,
+        self.experimental_max_records_per_user,
+    )
+    total = max(1.0, noisy_total)
     k = self.experimental_max_records_per_user
     total_measurement = mbi.LinearMeasurement(
         np.array([total]),  # pyrefly: ignore[bad-argument-type]
         (),
-        stddev=k * self.total_count_mechanism.sigma,  # pyrefly: ignore[unsupported-operation]
+        stddev=k * self.total_count_sigma,
     )
 
     results: dict[str, initialization.ColumnMeasurement] = {}
     for col, init in self.initializers.items():
       if isinstance(init, initialization.NumericalInitializer):
-        results[col] = init(rng, data[col].values, estimated_total=total)
+        results[col] = init(rng, data[col].values, estimated_total=float(total))
       else:
         results[col] = init(rng, data[col].values)
 

@@ -61,6 +61,7 @@ from absl import logging
 import apache_beam as beam
 from apache_beam.io.filesystems import FileSystems
 import dp_accounting
+from dpsynth import api
 from dpsynth import data_generation_v3
 from dpsynth import domain
 from dpsynth.local_mode import initialization
@@ -445,8 +446,8 @@ def _run_two_pass(
     pipeline_kwargs: dict[str, Any] | None = None,
 ) -> data_generation_v3.DataGenerationResult:
   """Two-pass Beam pipeline that delegates to a local TabularSynthesizer."""
-  total_count_mechanism = synth.total_count_mechanism
-  sigma = total_count_mechanism.sigma if total_count_mechanism else None
+
+  sigma = synth.total_count_sigma
   if synth.initializers is None or sigma is None:
     raise ValueError('TabularSynthesizer must be calibrated.')
   inits = cast(dict[str, Initializer], synth.initializers)
@@ -478,10 +479,11 @@ def _run_two_pass(
     num_rows = int(_read(count_path))
     logging.info('[DPSynth/Beam]: Pass 1 complete.')
     # pyrefly: ignore[missing-attribute]
-    total = max(1.0, total_count_mechanism.noisy_count(rng, num_rows))
-    total_measurement = mbi.LinearMeasurement(
-        np.array([total]), (), stddev=sigma
+    total = primitives.add_gaussian_noise(
+        rng, float(num_rows), sigma, synth.experimental_max_records_per_user
     )
+    total = float(max(1.0, total))
+    total_measurement = mbi.LinearMeasurement(np.array([total]), (), sigma)
 
     # Ask the configured discrete mechanism which marginals it needs.
     mbi_domain = data_generation_v3.TabularCodec.from_measurements(
@@ -514,7 +516,7 @@ def _run_two_pass(
 
 
 @dataclasses.dataclass
-class BeamTabularSynthesizer(primitives.DPMechanism):
+class BeamTabularSynthesizer(api.DPMechanism):
   """Beam-backed DPMechanism with the TabularSynthesizer calibrate->run API.
 
   Subclasses :class:`DPMechanism` so it inherits ``calibrate`` for free, but

@@ -18,7 +18,6 @@ import unittest
 
 from absl.testing import absltest
 from absl.testing import parameterized
-import dp_accounting
 from dpsynth.local_mode import primitives
 import numpy as np
 
@@ -135,44 +134,53 @@ class SelectPartitionsGaussianThresholdingTest(absltest.TestCase):
 
   def test_basic_operation(self):
     data = np.array([1] * 50 + [2] * 5)
-    mech = primitives.DPPartitionSelection(
-        delta=1e-5, sigma=1.0 / np.sqrt(10.0)
+    selected_partitions, estimated_counts, _ = (
+        primitives.select_partitions_gaussian_thresholding(
+            self.rng, data, gdp_budget=10.0, delta=1e-5
+        )
     )
-    result = mech(self.rng, data)
-    self.assertIn(1, result.selected_partitions)
-    self.assertEqual(
-        result.selected_partitions.size, result.estimated_counts.size
-    )
+    self.assertIn(1, selected_partitions)
+    self.assertEqual(selected_partitions.size, estimated_counts.size)
 
   def test_empty_data(self):
     data = np.array([], dtype=int)
-    mech = primitives.DPPartitionSelection(delta=1e-5, sigma=1.0)
-    result = mech(self.rng, data)
-    self.assertEmpty(result.selected_partitions)
-    self.assertEmpty(result.estimated_counts)
+    selected_partitions, estimated_counts, _ = (
+        primitives.select_partitions_gaussian_thresholding(
+            self.rng, data, gdp_budget=1.0, delta=1e-5
+        )
+    )
+    self.assertEmpty(selected_partitions)
+    self.assertEmpty(estimated_counts)
 
   def test_high_budget_selects_all(self):
     data = np.array([1, 2, 3, 4, 5])
-    mech = primitives.DPPartitionSelection(delta=0.1, sigma=0.0)
-    result = mech(self.rng, data)
-    self.assertCountEqual(result.selected_partitions, [1, 2, 3, 4, 5])
+    selected_partitions, _, _ = (
+        primitives.select_partitions_gaussian_thresholding(
+            self.rng, data, gdp_budget=np.inf, delta=0.1
+        )
+    )
+    self.assertCountEqual(selected_partitions, [1, 2, 3, 4, 5])
 
   def test_rare_items_not_selected(self):
     # One item with many occurrences, another with just 1.
     # With moderate budget and tight delta, the rare item should be dropped.
     data = np.array([1] * 100 + [2])
-    mech = primitives.DPPartitionSelection(delta=1e-6, sigma=1.0 / np.sqrt(0.5))
-    result = mech(self.rng, data)
-    self.assertIn(1, result.selected_partitions)
-    self.assertNotIn(2, result.selected_partitions)
+    selected_partitions, _, _ = (
+        primitives.select_partitions_gaussian_thresholding(
+            self.rng, data, gdp_budget=0.5, delta=1e-6
+        )
+    )
+    self.assertIn(1, selected_partitions)
+    self.assertNotIn(2, selected_partitions)
 
   def test_string_data_type(self):
     data = np.array(["a", "b", "a", "a", "c", "a", "c"])
-    mech = primitives.DPPartitionSelection(
-        delta=1e-5, sigma=1.0 / np.sqrt(10.0)
+    selected_partitions, _, _ = (
+        primitives.select_partitions_gaussian_thresholding(
+            self.rng, data, gdp_budget=10.0, delta=1e-5
+        )
     )
-    result = mech(self.rng, data)
-    self.assertTrue(all(isinstance(p, str) for p in result.selected_partitions))
+    self.assertTrue(all(isinstance(p, str) for p in selected_partitions))
 
   def test_min_count_filters_low_count_partitions(self):
     # Partition 1 has count 50, partition 2 has count 3.
@@ -260,174 +268,49 @@ class EnsurePublicPartitionsTest(absltest.TestCase):
     self.assertLen(cts, 2)
 
 
-class GaussianHistogramTest(absltest.TestCase):
+class AddGaussianNoiseTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
     self.rng = np.random.default_rng(42)
 
-  def test_basic_operation(self):
-    counts = np.array([2, 3, 1, 0])
-    mech = primitives.DPGaussianHistogram(domain_size=4, sigma=1.0)
-    result = mech(self.rng, counts)
-    self.assertLen(result.counts, 4)
-    # Noisy counts should be close to true counts [2, 3, 1, 0].
-    np.testing.assert_allclose(result.counts, [2, 3, 1, 0], atol=5.0)
+  def test_scalar(self):
+    noisy = primitives.add_gaussian_noise(self.rng, 100, sigma=1.0)
+    self.assertIsInstance(noisy, float)
+    self.assertAlmostEqual(noisy, 100.0, delta=5.0)
 
-  def test_zero_sigma(self):
-    counts = np.array([2, 1, 3])
-    mech = primitives.DPGaussianHistogram(domain_size=3, sigma=0.0)
-    result = mech(self.rng, counts)
-    np.testing.assert_array_equal(result.counts, [2, 1, 3])
+  def test_1d_array(self):
+    counts = np.array([10, 20, 30])
+    noisy = primitives.add_gaussian_noise(self.rng, counts, sigma=1.0)
+    self.assertEqual(noisy.shape, (3,))
+    np.testing.assert_allclose(noisy, counts, atol=5.0)
 
-  def test_empty_data(self):
-    counts = np.array([0, 0, 0])
-    mech = primitives.DPGaussianHistogram(domain_size=3, sigma=1.0)
-    result = mech(self.rng, counts)
-    self.assertLen(result.counts, 3)
+  def test_2d_array(self):
+    counts = np.ones((2, 2)) * 10
+    noisy = primitives.add_gaussian_noise(self.rng, counts, sigma=1.0)
+    self.assertEqual(noisy.shape, (2, 2))
+    np.testing.assert_allclose(noisy, counts, atol=5.0)
 
-
-# ---------------------------------------------------------------------------
-# DPMechanism wrapper tests
-
-
-class DPGaussianHistogramTest(absltest.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    self.rng = np.random.default_rng(42)
-
-  def test_calibrate_and_call(self):
-    mech = primitives.DPGaussianHistogram(domain_size=4)
-    calibrated = mech.configure(zcdp_rho=0.5)
-    counts = np.array([2, 3, 1, 0])
-    result = calibrated(self.rng, counts)
-    self.assertLen(result.counts, 4)
-    np.testing.assert_allclose(result.counts, [2, 3, 1, 0], atol=5.0)
-
-  def test_direct_sigma(self):
-    mech = primitives.DPGaussianHistogram(domain_size=3, sigma=0.0)
-    counts = np.array([2, 1, 3])
-    np.testing.assert_array_equal(mech(self.rng, counts).counts, [2, 1, 3])
-
-  def test_dp_event_raises_before_calibration(self):
-    mech = primitives.DPGaussianHistogram(domain_size=4)
-    with self.assertRaises(ValueError):
-      _ = mech.dp_event
-
-  def test_call_raises_before_calibration(self):
-    mech = primitives.DPGaussianHistogram(domain_size=4)
-    with self.assertRaises(ValueError):
-      mech(self.rng, np.array([0, 0, 1, 0]))
-
-  def test_dp_event_type(self):
-    mech = primitives.DPGaussianHistogram(domain_size=4).configure(zcdp_rho=0.5)
-    event = mech.dp_event
-    self.assertIsInstance(event, dp_accounting.GaussianDpEvent)
-    self.assertAlmostEqual(event.noise_multiplier, 1.0)
-
-
-class DPGaussianCountTest(absltest.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    self.rng = np.random.default_rng(42)
-
-  def test_calibrate_and_call(self):
-    mech = primitives.DPGaussianCount()
-    calibrated = mech.configure(zcdp_rho=0.5)
-    data = np.array([1, 2, 3, 4, 5])
-    result = calibrated(self.rng, data)
-    self.assertIsInstance(result, float)
-    np.testing.assert_allclose(result, 5.0, atol=5.0)
-
-  def test_zero_sigma_returns_exact_count(self):
-    mech = primitives.DPGaussianCount(sigma=0.0)
-    data = np.array([10, 20, 30])
-    self.assertEqual(mech(self.rng, data), 3.0)
-
-  def test_dp_event_raises_before_calibration(self):
-    mech = primitives.DPGaussianCount()
-    with self.assertRaises(ValueError):
-      _ = mech.dp_event
-
-  def test_dp_event_type(self):
-    mech = primitives.DPGaussianCount().configure(zcdp_rho=0.5)
-    event = mech.dp_event
-    self.assertIsInstance(event, dp_accounting.GaussianDpEvent)
-    self.assertAlmostEqual(event.noise_multiplier, 1.0)
-
-
-class MaxRecordsPerUserTest(parameterized.TestCase):
-  """Tests the user-level DP knob ``max_records_per_user`` on primitives."""
-
-  def test_histogram_noise_scales_exactly_with_k(self):
+  def test_max_records_per_user_scales_noise(self):
     k = 4
     counts = np.array([10.0, 20.0, 30.0])
-    base = primitives.DPGaussianHistogram(domain_size=3).configure(zcdp_rho=1.0)
-    scaled = primitives.DPGaussianHistogram(
-        domain_size=3, max_records_per_user=k
-    ).configure(zcdp_rho=1.0)
-    base_noise = base(np.random.default_rng(0), counts).counts - counts
-    scaled_noise = scaled(np.random.default_rng(0), counts).counts - counts
+    base_rng = np.random.default_rng(0)
+    base_noise = (
+        primitives.add_gaussian_noise(
+            base_rng, counts, sigma=1.0, max_records_per_user=1
+        )
+        - counts
+    )
+
+    scaled_rng = np.random.default_rng(0)
+    scaled_noise = (
+        primitives.add_gaussian_noise(
+            scaled_rng, counts, sigma=1.0, max_records_per_user=k
+        )
+        - counts
+    )
+
     np.testing.assert_allclose(scaled_noise, k * base_noise)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-
-  def test_count_noise_scales_exactly_with_k(self):
-    k = 4
-    base = primitives.DPGaussianCount().configure(zcdp_rho=1.0)
-    scaled = primitives.DPGaussianCount(max_records_per_user=k).configure(
-        zcdp_rho=1.0
-    )
-    base_noise = base.noisy_count(np.random.default_rng(0), 100) - 100
-    scaled_noise = scaled.noisy_count(np.random.default_rng(0), 100) - 100
-    self.assertAlmostEqual(scaled_noise, k * base_noise)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-
-  def test_quantiles_accounting_invariant_to_k(self):
-    base = primitives.DPQuantiles(
-        num_partitions=4, lower=0.0, upper=10.0
-    ).configure(zcdp_rho=1.0)
-    scaled = primitives.DPQuantiles(
-        num_partitions=4, lower=0.0, upper=10.0, max_records_per_user=4
-    ).configure(zcdp_rho=1.0)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-    self.assertAlmostEqual(scaled.zcdp_rho, base.zcdp_rho)
-
-  def test_partition_selection_accounting_invariant_to_k(self):
-    base = primitives.DPPartitionSelection(delta=1e-5).configure(zcdp_rho=1.0)
-    scaled = primitives.DPPartitionSelection(
-        delta=1e-5, max_records_per_user=4
-    ).configure(zcdp_rho=1.0)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-
-  def test_partition_selection_noise_scales_with_k(self):
-    k = 4
-    data = np.repeat(np.arange(5), 20)
-    _, _, base_std = primitives.select_partitions_gaussian_thresholding(
-        np.random.default_rng(0), data, gdp_budget=1.0, delta=1e-5
-    )
-    _, _, scaled_std = primitives.select_partitions_gaussian_thresholding(
-        np.random.default_rng(0),
-        data,
-        gdp_budget=1.0,
-        delta=1e-5,
-        max_records_per_user=k,
-    )
-    self.assertAlmostEqual(scaled_std, k * base_std)
-
-  @parameterized.named_parameters(("zero", 0), ("negative", -3))
-  def test_invalid_k_raises(self, k):
-    with self.assertRaises(ValueError):
-      primitives.DPGaussianHistogram(domain_size=3, max_records_per_user=k)
-    with self.assertRaises(ValueError):
-      primitives.DPGaussianCount(max_records_per_user=k)
-    with self.assertRaises(ValueError):
-      primitives.DPQuantiles(
-          num_partitions=4, lower=0.0, upper=10.0, max_records_per_user=k
-      )
-    with self.assertRaises(ValueError):
-      primitives.DPPartitionSelection(delta=1e-5, max_records_per_user=k)
 
 
 if __name__ == "__main__":

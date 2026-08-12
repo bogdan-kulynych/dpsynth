@@ -42,7 +42,7 @@ import dataclasses
 import math
 
 import dp_accounting
-from dpsynth.local_mode import primitives
+from dpsynth import api
 from dpsynth.text import dp_trainer
 from dpsynth.text import model
 from gemma import gm
@@ -69,7 +69,7 @@ class FineTuneResult:
 
 
 @dataclasses.dataclass
-class DPFineTuner(primitives.DPMechanism):
+class DPFineTuner(api.DPMechanism):
   """Differentially private fine-tuning of Gemma models via DP-SGD.
 
   A ``DPMechanism`` that wraps ``DPTrainer`` with tokenization, model loading,
@@ -170,5 +170,5 @@ class DPFineTuner(primitives.DPMechanism):
     )
     state = trainer(rng=rng, data=dataset)
 
-    merged = peft.merge_params(frozen_params, state.params)  # pytype: disable=wrong-arg-types
+    merged = peft.merge_params(frozen_params, state.params)  # pyrefly: ignore[bad-argument-type]
     return FineTuneResult(model=module, params=merged)

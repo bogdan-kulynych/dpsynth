@@ -55,14 +55,14 @@ import typing
 
 from absl import logging
 import dp_accounting
-from dpsynth.local_mode import primitives
+from dpsynth import api
 from jax_privacy import execution_plan
 from jax_privacy.experimental import training
 import optax
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class DPTrainer(primitives.DPMechanism):
+class DPTrainer(api.DPMechanism):
   """General-purpose differentially private training via DP-SGD.
 
   Wraps ``jax_privacy.DPTrainer`` in the ``DPMechanism`` protocol, providing

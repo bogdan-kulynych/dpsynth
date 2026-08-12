@@ -161,8 +161,8 @@ class DataGenerationV3Test(parameterized.TestCase):
     rng = np.random.default_rng(0)
     calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
 
-    # total_count_mechanism should be set for numerical-only domains.
-    self.assertIsNotNone(calibrated.total_count_mechanism)
+    # total_count_sigma should be set for numerical-only domains.
+    self.assertIsNotNone(calibrated.total_count_sigma)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
 
@@ -179,7 +179,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
 
     # DPGaussianCount is always allocated.
-    self.assertIsNotNone(calibrated.total_count_mechanism)
+    self.assertIsNotNone(calibrated.total_count_sigma)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
 
@@ -229,7 +229,6 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         experimental_max_records_per_user=k,
     ).configure(zcdp_rho=100.0)
     self.assertEqual(calibrated.experimental_max_records_per_user, k)
-    self.assertEqual(calibrated.total_count_mechanism.max_records_per_user, k)
     self.assertEqual(calibrated.discrete_mechanism.max_records_per_user, k)
     for init in calibrated.initializers.values():
       self.assertEqual(init.max_records_per_user, k)
