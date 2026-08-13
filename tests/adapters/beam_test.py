@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import tempfile
 from unittest import mock
@@ -32,11 +33,23 @@ from dpsynth.local_mode import initialization
 import mbi
 import numpy as np
 
-_TEST_RESULTS = []
+_manager = None
+_test_results = None
+
+
+def setUpModule():
+  global _manager, _test_results
+  _manager = multiprocessing.Manager()
+  _test_results = _manager.list()
+
+
+def tearDownModule():
+  if _manager is not None:
+    _manager.shutdown()
 
 
 def _store(x):
-  _TEST_RESULTS.append(x)
+  _test_results.append(x)
 
 
 def _rows_fn(rows):
@@ -53,17 +66,15 @@ class NumericalHistogramTest(absltest.TestCase):
         attribute=attr,
         max_grid_size=max_grid_size,
     ).configure(zcdp_rho=np.inf)
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
-
-          p | beam.Create(rows)
-
+          p
+          | beam.Create(rows)
           | beam_adapter.ComputeSufficientStats({'x': init})
-
       )
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
-    return dict(_TEST_RESULTS[0]['x'])
+    return dict(_test_results[0]['x'])
 
   def _ref_counts(self, values, attr, max_grid_size=101, num_partitions=4):
     """In-memory grid histogram as an {index: count} dict."""
@@ -164,17 +175,15 @@ class CategoricalCountsTest(absltest.TestCase):
         {'col': 'c'},
         {'col': 'z'},  # unknown → mapped to 'unk' (index 0)
     ]
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
-
-          p | beam.Create(rows)
-
+          p
+          | beam.Create(rows)
           | beam_adapter.ComputeSufficientStats({'col': init})
-
       )
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
-    counts = dict(_TEST_RESULTS[0]['col'])
+    counts = dict(_test_results[0]['col'])
     self.assertEqual(counts.get(0, 0), 1)
     self.assertEqual(counts.get(1, 0), 2)
     self.assertEqual(counts.get(2, 0), 1)
@@ -197,17 +206,15 @@ class OpenSetCountsTest(absltest.TestCase):
         {'col': 'cherry'},
         {'col': 'cherry'},
     ]
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
-
-          p | beam.Create(rows)
-
+          p
+          | beam.Create(rows)
           | beam_adapter.ComputeSufficientStats({'col': init})
-
       )
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
-    counts = dict(_TEST_RESULTS[0]['col'])
+    counts = dict(_test_results[0]['col'])
     self.assertEqual(counts['apple'], 2)
     self.assertEqual(counts['banana'], 1)
     self.assertEqual(counts['cherry'], 3)
@@ -247,20 +254,16 @@ class RunFromSummaryTest(absltest.TestCase):
     rng = np.random.default_rng(42)
 
     # Sufficient stats are computed in Beam, then DP init runs on the driver.
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
-
-          p | beam.Create(rows)
-
+          p
+          | beam.Create(rows)
           | beam_adapter.ComputeSufficientStats(initializers)
-
       )
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
     measurements = beam_adapter.run_from_summary(
-
-        _TEST_RESULTS[0], initializers, rng
-
+        _test_results[0], initializers, rng
     )
 
     self.assertLen(measurements, 3)
@@ -296,7 +299,7 @@ class ComputeMarginalsTest(absltest.TestCase):
     # Stage 1: get ColumnMeasurements.
     inits = {'color': cat_init, 'size': num_init}
     rng = np.random.default_rng(42)
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
           p
@@ -304,11 +307,11 @@ class ComputeMarginalsTest(absltest.TestCase):
           | beam_adapter.ComputeSufficientStats(inits)
       )
       _ = stats | 'ToDict1' >> beam.combiners.ToDict() | beam.Map(_store)
-    cms = beam_adapter.run_from_summary(_TEST_RESULTS[0], inits, rng)
+    cms = beam_adapter.run_from_summary(_test_results[0], inits, rng)
 
     # Stage 2: compute marginals.
     workload = [('color',), ('size',), ('color', 'size')]
-    _TEST_RESULTS.clear()
+    del _test_results[:]
     with beam.Pipeline() as p:
       result = (
           p
@@ -317,7 +320,7 @@ class ComputeMarginalsTest(absltest.TestCase):
       )
       _ = result | beam.Map(_store)
 
-    cv = _TEST_RESULTS[0]
+    cv = _test_results[0]
     self.assertIsInstance(cv, mbi.CliqueVector)
     self.assertLen(cv.cliques, 3)
 
@@ -602,7 +605,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     synth = data_generation_v3.TabularSynthesizer(
         domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
     )
-    options = pipeline_options.PipelineOptions(flags=[], runner='DirectRunner')
+    options = pipeline_options.PipelineOptions(flags=['--runner=DirectRunner'])
     beam_synth = beam_adapter.BeamTabularSynthesizer(
         synth, pipeline_options=options
     ).configure(zcdp_rho=100.0)
