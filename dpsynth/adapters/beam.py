@@ -51,9 +51,15 @@ import numpy as np
 Row = dict[str, Any]
 
 Initializer = (
+    initialization.NumericalInitializerConfig
+    | initialization.CategoricalInitializerConfig
+    | initialization.OpenSetInitializerConfig
+)
+
+CalibratedInitializer = (
     initialization.NumericalInitializer
     | initialization.CategoricalInitializer
-    | initialization.OpenSetCategoricalInitializer
+    | initialization.OpenSetInitializer
 )
 
 
@@ -66,20 +72,20 @@ class _EncodeColumns(beam.DoFn):
     super().__init__()
     self._specs: list[tuple[str, str, dict[str, Any]]] = []
     for column, init in initializers.items():
-      if isinstance(init, initialization.NumericalInitializer):
+      if isinstance(init, initialization.NumericalInitializerConfig):
         attr = init.attribute
-        lower, upper, gs = init._grid_spec
+        lower, upper, gs = init.grid_spec
         delta = (upper - lower) / (gs - 1)
         meta = dict(attribute=attr, lower=lower, upper=upper, delta=delta)
         self._specs.append((column, 'numerical', meta))
 
-      elif isinstance(init, initialization.CategoricalInitializer):
+      elif isinstance(init, initialization.CategoricalInitializerConfig):
         meta = {
             'lookup': init.attribute.lookup,
             'default': init.attribute.out_of_domain_index,
         }
         self._specs.append((column, 'categorical', meta))
-      elif isinstance(init, initialization.OpenSetCategoricalInitializer):
+      elif isinstance(init, initialization.OpenSetInitializerConfig):
         self._specs.append((column, 'openset', {}))
       else:
         raise TypeError(f'Unsupported initializer type: {type(init)}')
@@ -138,7 +144,7 @@ class ComputeSufficientStats(beam.PTransform):
     self._openset_min_counts = {
         col: init.min_count
         for col, init in initializers.items()
-        if isinstance(init, initialization.OpenSetCategoricalInitializer)
+        if isinstance(init, initialization.OpenSetInitializerConfig)
     }
 
   def expand(
@@ -184,7 +190,7 @@ def _sparse_to_openset(sparse):
 # mbi) into the Beam pipeline, which can increase setup time for each worker.
 def run_from_summary(
     sparse_stats: dict[str, list[tuple[Any, int]]],
-    initializers: dict[str, Initializer],
+    initializers: dict[str, CalibratedInitializer],
     rng: np.random.Generator,
 ) -> dict[str, initialization.ColumnMeasurement]:
   """Converts materialized sparse stats to ColumnMeasurements on the driver.
@@ -205,12 +211,12 @@ def run_from_summary(
   for column, init in initializers.items():
     sparse = sparse_stats[column]
     if isinstance(init, initialization.NumericalInitializer):
-      counts = _sparse_to_dense_numerical(sparse, init.grid_size)
+      counts = _sparse_to_dense_numerical(sparse, init.config.grid_spec[2])
       results[column] = init.from_summary(rng, counts)
     elif isinstance(init, initialization.CategoricalInitializer):
-      counts = _sparse_to_dense_categorical(sparse, init.attribute.size)
+      counts = _sparse_to_dense_categorical(sparse, init.config.attribute.size)
       results[column] = init.from_summary(rng, counts)
-    elif isinstance(init, initialization.OpenSetCategoricalInitializer):
+    elif isinstance(init, initialization.OpenSetInitializer):
       unique_values, value_counts = _sparse_to_openset(sparse)
       results[column] = init.from_summary(rng, unique_values, value_counts)
   return results
@@ -248,7 +254,6 @@ class _EncodeAndProject(beam.DoFn):
     # supporting_cliques() never returns the 0-way clique (), so shape is always
     # non-empty here and np.ravel_multi_index is safe.
     for clique_idx, clique_cols, shape in self._clique_meta:
-      assert shape, f'Unexpected 0-way clique at index {clique_idx}.'
       multi_index = tuple(encoded[c] for c in clique_cols)  # pyrefly: ignore[bad-index]
       linear = int(np.ravel_multi_index(multi_index, shape))
       yield clique_idx, linear
@@ -399,6 +404,7 @@ def generate_from_marginals(
   initial_measurements = [total_measurement, *codec.one_way_measurements()]
   mbi_constraints = tuple(c.to_mbi() for c in synth.cross_attribute_constraints)
   logging.info('[DPSynth/Beam]: Running discrete mechanism.')
+  # pyrefly: ignore[missing-attribute,not-callable]
   mechanism_result = synth.discrete_mechanism(
       rng,
       data=marginals,
@@ -428,7 +434,8 @@ def _run_two_pass(
   sigma = synth.total_count_sigma
   if synth.initializers is None or sigma is None:
     raise ValueError('TabularSynthesizer must be calibrated.')
-  inits = cast(dict[str, Initializer], synth.initializers)
+  inits = cast(dict[str, CalibratedInitializer], synth.initializers)
+  init_configs = {name: c.config for name, c in inits.items()}
   if pipeline_kwargs is None:
     pipeline_kwargs = {}
 
@@ -445,7 +452,7 @@ def _run_two_pass(
       rows = create_rows_fn(p)
       summary = (
           rows
-          | ComputeSufficientStats(inits)
+          | ComputeSufficientStats(init_configs)
           | 'ToDict' >> beam.combiners.ToDict()
       )
       _ = summary | 'WriteSummary' >> beam.Map(_write, path=summary_path)
@@ -458,7 +465,7 @@ def _run_two_pass(
     logging.info('[DPSynth/Beam]: Pass 1 complete.')
     # pyrefly: ignore[missing-attribute]
     total = primitives.add_gaussian_noise(
-        rng, float(num_rows), sigma, synth.experimental_max_records_per_user
+        rng, float(num_rows), sigma, cast(int, synth.max_records_per_user)
     )
     total = float(max(1.0, total))
     total_measurement = mbi.LinearMeasurement(np.array([total]), (), sigma)
@@ -467,6 +474,7 @@ def _run_two_pass(
     mbi_domain = data_generation_v3.TabularCodec.from_measurements(
         column_measurements, synth.domains
     ).mbi_domain
+    # pyrefly: ignore[missing-attribute]
     workload = synth.discrete_mechanism.supporting_cliques(mbi_domain)
 
     # Pass 2: compute the marginal workload.
@@ -528,9 +536,7 @@ class BeamTabularSynthesizer(api.DPMechanism):
   temp_location: str | None = None
   pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
 
-  def configure(  # pyrefly: ignore[bad-override]
-      self, *, zcdp_rho: float, delta: float = 0.0
-  ) -> BeamTabularSynthesizer:
+  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
     """Returns a copy whose synthesizer is configured with the given budget."""
     synthesizer = self.synthesizer.configure(zcdp_rho=zcdp_rho, delta=delta)
     return dataclasses.replace(self, synthesizer=synthesizer)

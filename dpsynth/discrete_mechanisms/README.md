@@ -44,31 +44,31 @@ multiple mechanisms; keep selection policy in individual mechanism files.
 
 ## `independent.py` - One-Way Baseline
 
-Implements `IndependentMechanism`, the simplest mechanism. It uses the shared
+Implements `IndependentConfig`, the simplest mechanism. It uses the shared
 workflow from `base.py`, spends its budget on one-way marginals, and selects no
 additional cliques. The resulting model preserves each column's distribution but
 does not model relationships between columns.
 
-**Public API:** `IndependentMechanism`
+**Public API:** `IndependentConfig`
 
 ## `direct.py` — Caller-Defined Workload
 
-Implements `DirectMechanism`, which measures the cliques supplied through
+Implements `DirectConfig`, which measures the cliques supplied through
 `prespecified_marginal_queries`. It performs no data-dependent selection and
 does not create its own one-way measurements, so the full budget is available
 for the specified workload. Initial measurements supplied by another layer are
 included when fitting the final model.
 
-**Public API:** `DirectMechanism(prespecified_marginal_queries=...)`
+**Public API:** `DirectConfig(prespecified_marginal_queries=...)`
 
 ## `mst.py` — Private Pairwise Spanning-Tree Selection
 
-Implements `MSTMechanism`, the default general-purpose mechanism for preserving
+Implements `MSTConfig`, the default general-purpose mechanism for preserving
 pairwise relationships. It begins with one-way marginals, privately selects
 pairwise cliques forming a maximum spanning tree, measures those cliques, and
 uses the shared base pipeline to estimate the final model.
 
-**Public API:** `MSTMechanism`
+**Public API:** `MSTConfig`
 
 **Internal behavior:** `_allocate_budget()` splits remaining rho between private
 selection and measurement; `_select()` calls the spanning-tree selection logic.
@@ -77,11 +77,11 @@ the private pairwise-selection step.
 
 ## `aim.py` — Adaptive Iterative Selection
 
-Implements `AIMMechanism`, an adaptive workload-based mechanism. Instead of
+Implements `AIMConfig`, an adaptive workload-based mechanism. Instead of
 selecting cliques once, it repeatedly finds a marginal that the current model
 approximates poorly, measures it, and updates the model.
 
-**Public API:** `AIMMechanism(workload=...)`
+**Public API:** `AIMConfig(workload=...)`
 
 **Internal behavior:** `_one_way_cliques()` limits initial measurements to the
 workload; `_allocate_budget()` reserves rho for the adaptive loop; `_run()`
@@ -90,11 +90,11 @@ candidates and privately choose the worst-approximated marginal.
 
 ## `aim_gdp.py` — AIM with GDP-Oriented Allocation
 
-Implements `AIMGDPMechanism`, a variant of AIM with the same adaptive workflow
+Implements `AIMGDPConfig`, a variant of AIM with the same adaptive workflow
 but GDP units for its internal loop budgeting. It is useful when its alternative
 privacy-accounting behavior is preferred.
 
-**Public API:** `AIMGDPMechanism(workload=...)`
+**Public API:** `AIMGDPConfig(workload=...)`
 
 **Internal behavior:** Like `aim.py`, it overrides `_one_way_cliques()`,
 `_allocate_budget()`, and `_run()`. Its internal helpers compute GDP-aware error
@@ -102,12 +102,12 @@ scores and select the next workload marginal.
 
 ## `swift.py` — Workload and Clique-Tree Mechanism
 
-Implements `SWIFTMechanism`, a workload-informed mechanism that selects
+Implements `SWIFT`, a workload-informed mechanism that selects
 marginals while controlling clique-tree complexity. It uses a custom
 junction-tree-aware estimation and sampling path rather than the standard
 one-pass implementation in `base.py`.
 
-**Public API:** `SWIFTMechanism(workload=...)`
+**Public API:** `SWIFTConfig(workload=...)`
 
 **Internal behavior:** `_allocate_budget()` splits rho between selection and
 measurement; `_run()` compiles the workload, selects supported cliques, builds a

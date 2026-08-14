@@ -22,7 +22,7 @@ from dpsynth import discrete_mechanisms
 from dpsynth import domain
 from dpsynth.discrete_mechanisms import aim
 from dpsynth.discrete_mechanisms import aim_gdp
-from dpsynth.discrete_mechanisms.independent import IndependentMechanism
+from dpsynth.discrete_mechanisms.independent import IndependentConfig
 import mbi
 import numpy as np
 import pandas as pd
@@ -304,8 +304,8 @@ class DataGenerationV3Test(parameterized.TestCase):
 
   def test_discrete_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
-    config = aim.AIMMechanism(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentMechanism(pgm_iters=500)
+    config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -315,10 +315,10 @@ class DataGenerationV3Test(parameterized.TestCase):
 
   def test_discrete_workload_regression_with_aim_gdp(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
-    config = aim_gdp.AIMGDPMechanism(
+    config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentMechanism(pgm_iters=500)
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -328,8 +328,8 @@ class DataGenerationV3Test(parameterized.TestCase):
 
   def test_mixed_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
-    config = aim.AIMMechanism(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentMechanism(pgm_iters=500)
+    config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -337,10 +337,10 @@ class DataGenerationV3Test(parameterized.TestCase):
 
   def test_mixed_workload_regression_with_aim_gdp(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
-    config = aim_gdp.AIMGDPMechanism(
+    config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentMechanism(pgm_iters=500)
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -368,37 +368,27 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   def _categorical_domains(self):
     return {
-        'A': domain.CategoricalAttribute(
-            possible_values=['a', 'b', 'c'], out_of_domain_index=0
-        ),
-        'B': domain.NumericalAttribute(min_value=0, max_value=10),
+        'A': domain.CategoricalAttribute(['a', 'b', 'c']),
+        'B': domain.CategoricalAttribute(['x', 'y', 'z']),
     }
 
   def test_configure_propagates_k_to_submechanisms(self):
     k = 5
-    calibrated = TabularSynthesizer(
-        domains=self._categorical_domains(),
-        experimental_max_records_per_user=k,
-    ).configure(zcdp_rho=100.0)
-    self.assertEqual(calibrated.experimental_max_records_per_user, k)
+    config = TabularSynthesizer(domains=self._categorical_domains())
+    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=k)
+    self.assertEqual(calibrated.max_records_per_user, k)
     self.assertEqual(calibrated.discrete_mechanism.max_records_per_user, k)
-    for init in calibrated.initializers.values():
-      self.assertEqual(init.max_records_per_user, k)
 
   def test_dp_event_invariant_to_k(self):
-    base = TabularSynthesizer(domains=self._categorical_domains()).configure(
-        zcdp_rho=100.0
-    )
-    scaled = TabularSynthesizer(
-        domains=self._categorical_domains(), experimental_max_records_per_user=5
-    ).configure(zcdp_rho=100.0)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
+    config = TabularSynthesizer(domains=self._categorical_domains())
+    calibrated1 = config.configure(zcdp_rho=100.0)
+    calibrated2 = config.configure(zcdp_rho=100.0, max_records_per_user=5)
+    self.assertEqual(repr(calibrated1.dp_event), repr(calibrated2.dp_event))
 
   def test_end_to_end_with_k(self):
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
-    calibrated = TabularSynthesizer(
-        domains=self._categorical_domains(), experimental_max_records_per_user=3
-    ).configure(zcdp_rho=100.0)
+    config = TabularSynthesizer(domains=self._categorical_domains())
+    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=3)
     synthetic_df = calibrated(np.random.default_rng(0), df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
 
@@ -408,30 +398,26 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     base = TabularSynthesizer(domains=domains).configure(
         zcdp_rho=100.0, delta=1e-5
     )
-    scaled = TabularSynthesizer(
-        domains=domains, experimental_max_records_per_user=2
-    ).configure(zcdp_rho=100.0, delta=1e-5)
+    config = TabularSynthesizer(domains=domains)
+    mech = config.configure(zcdp_rho=100.0, delta=1e-5, max_records_per_user=3)
     # Accounting is byte-identical across k; only the injected noise scales.
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-    synthetic_df = scaled(np.random.default_rng(0), df).synthetic_data
+    self.assertEqual(repr(mech.dp_event), repr(base.dp_event))
+    synthetic_df = mech(np.random.default_rng(0), df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A'])
 
   def test_custom_initializers_inherit_k(self):
     domains = self._categorical_domains()
-    inits = data_generation_v3._create_initializers(domains, 32, 0.0)
-    calibrated = TabularSynthesizer(
-        domains=domains, initializers=inits, experimental_max_records_per_user=2
-    ).configure(zcdp_rho=100.0)
+    inits = data_generation_v3._create_initializers(domains, 32)
+    config = TabularSynthesizer(domains=domains, initializers=inits)
+    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=2)
     for init in calibrated.initializers.values():
       self.assertEqual(init.max_records_per_user, 2)
 
   @parameterized.named_parameters(('zero', 0), ('negative', -3))
   def test_invalid_k_raises(self, k):
+    config = TabularSynthesizer(domains=self._categorical_domains())
     with self.assertRaises(ValueError):
-      TabularSynthesizer(
-          domains=self._categorical_domains(),
-          experimental_max_records_per_user=k,
-      )
+      _ = config.configure(zcdp_rho=100.0, max_records_per_user=k)
 
   def test_poisson_calibrate_with_categorical_domains_and_gdp_mech(self):
     domains = {
@@ -440,7 +426,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     }
     config = TabularSynthesizer(
         domains=domains,
-        discrete_mechanism=discrete_mechanisms.IndependentMechanism(),
+        discrete_mechanism=discrete_mechanisms.IndependentConfig(),
     )
     mechanism = config.calibrate(
         epsilon=1.0,

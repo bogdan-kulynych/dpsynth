@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import dataclasses
 import math
+import typing
 
 from absl import logging
 import dp_accounting
@@ -38,22 +39,15 @@ import pandas as pd
 def _create_initializers(
     domains: Mapping[str, domain.AttributeType],
     numerical_bins: int,
-    init_delta: float,
-    max_records_per_user: int = 1,
-) -> dict[str, api.DPMechanism]:
+) -> dict[str, api.MechanismConfig]:
   """Creates per-column initializers from the domain specification.
 
   Args:
     domains: Mapping from column names to attribute domain specifications.
     numerical_bins: Number of bins for numerical discretization.
-    init_delta: Delta for open-set categorical partition selection.
-    max_records_per_user: Assumed upper bound on the number of records a single
-      user contributes. Sensitivity (and hence added noise) is scaled by this
-      factor to provide user-level rather than record-level DP; the privacy
-      analysis is unchanged. Soundness relies on the caller enforcing the bound.
 
   Returns:
-    A dictionary mapping column names to uncalibrated initializer instances.
+    A dictionary mapping column names to uncalibrated initializer configs.
 
   Raises:
     ValueError: If a column has an unsupported attribute type.
@@ -61,22 +55,20 @@ def _create_initializers(
   initializers = {}
   for col, attr in domains.items():
     if isinstance(attr, domain.NumericalAttribute):
-      initializers[col] = initialization.NumericalInitializer(
+      initializers[col] = initialization.NumericalInitializerConfig(
           name=col,
           num_partitions=numerical_bins,
           attribute=attr,
-          max_records_per_user=max_records_per_user,
       )
     elif isinstance(attr, domain.CategoricalAttribute):
-      initializers[col] = initialization.CategoricalInitializer(
-          name=col, attribute=attr, max_records_per_user=max_records_per_user
-      )
-    elif isinstance(attr, domain.OpenSetCategoricalAttribute):
-      initializers[col] = initialization.OpenSetCategoricalInitializer(
+      initializers[col] = initialization.CategoricalInitializerConfig(
           name=col,
           attribute=attr,
-          delta=init_delta,
-          max_records_per_user=max_records_per_user,
+      )
+    elif isinstance(attr, domain.OpenSetCategoricalAttribute):
+      initializers[col] = initialization.OpenSetInitializerConfig(
+          name=col,
+          attribute=attr,
       )
     else:
       raise ValueError(
@@ -192,6 +184,8 @@ class DataGenerationResult:
   codec: TabularCodec
 
 
+# TabularSynthesizer acting as both a config and a mechanism. This will be
+# addressed in a future refactoring.
 @dataclasses.dataclass
 class TabularSynthesizer(api.DPMechanism):
   """End-to-end DP synthetic data generation mechanism.
@@ -216,35 +210,62 @@ class TabularSynthesizer(api.DPMechanism):
       initialization (the rest goes to the discrete mechanism).
     initializers: Per-column initializer mechanisms. If None, created
       automatically from ``domains`` during ``configure()``.
-    skip_compression: Whether to skip domain compression.
+    total_count_sigma: Sigma for the total-count mechanism. If None, set
+      automatically during ``configure()``.
     cross_attribute_constraints: Constraints to enforce on generated data.
-    experimental_max_records_per_user: EXPERIMENTAL and subject to change.
-      Assumed upper bound on the number of records a single user contributes.
-      Values greater than 1 scale the added noise (and mechanism sensitivity) to
-      provide user-level rather than record-level DP; the privacy accounting is
+    max_records_per_user: EXPERIMENTAL and subject to change. Assumed upper
+      bound on the number of records a single user contributes. Values greater
+      than 1 scale the added noise (and mechanism sensitivity) to provide
+      user-level rather than record-level DP; the privacy accounting is
       unchanged. This bound is NOT enforced -- soundness relies on the caller
       guaranteeing it via preprocessing.
   """
 
   domains: Mapping[str, domain.AttributeType]
-  discrete_mechanism: discrete_mechanisms.DiscreteMechanism = dataclasses.field(
-      default_factory=discrete_mechanisms.MSTMechanism
-  )
+  discrete_mechanism: (
+      discrete_mechanisms.DiscreteMechanismConfig
+      | discrete_mechanisms.DiscreteMechanism
+  ) = dataclasses.field(default_factory=discrete_mechanisms.MSTConfig)
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
-  initializers: dict[str, api.DPMechanism] | None = None
+  initializers: (
+      dict[str, api.MechanismConfig | api.CalibratedMechanism] | None
+  ) = None
   total_count_sigma: float | None = dataclasses.field(default=None, repr=False)
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
-  experimental_max_records_per_user: int = 1
+  max_records_per_user: int | None = None
 
-  def __post_init__(self):
-    api.validate_max_records_per_user(self.experimental_max_records_per_user)
+  def _compute_per_col_deltas(self, delta):
+    # Split delta across open-set columns, analogous to splitting zcdp_rho.
+    # Under calibrate(), any delta not consumed here is automatically
+    # available for the zCDP-to-(epsilon, delta) conversion, so this
+    # simple additive split is tight.
+    num_open_set = sum(
+        isinstance(attr, domain.OpenSetCategoricalAttribute)
+        for attr in self.domains.values()
+    )
+    if num_open_set > 0 and delta <= 0:
+      raise ValueError(
+          'delta must be positive when open-set categorical attributes are'
+          ' present. It is used for Gaussian partition selection.'
+      )
 
-  def configure(  # pyrefly: ignore[bad-override]
+    thresholding_delta = self.init_budget_fraction * delta
+
+    per_col_deltas = {}
+    for col in self.domains:
+      if isinstance(self.domains[col], domain.OpenSetCategoricalAttribute):
+        per_col_deltas[col] = thresholding_delta / num_open_set
+      else:
+        per_col_deltas[col] = 0.0
+    return per_col_deltas
+
+  def configure(
       self,
       *,
       zcdp_rho: float,
       delta: float = 0.0,
+      max_records_per_user: int = 1,
   ) -> TabularSynthesizer:
     """Returns a copy configured with the given privacy budget.
 
@@ -268,6 +289,12 @@ class TabularSynthesizer(api.DPMechanism):
         (``init_budget_fraction``) is allocated to partition selection for
         open-set columns. Must be positive when open-set categorical attributes
         are present.
+      max_records_per_user: Assumed upper bound on the number of records a
+        single user contributes. Values greater than 1 scale the added noise
+        (and mechanism sensitivity) to provide user-level rather than
+        record-level DP; the privacy accounting is unchanged. This bound is NOT
+        enforced -- soundness relies on the caller guaranteeing it via
+        preprocessing.
 
     Returns:
       A new TabularSynthesizer with calibrated sub-mechanisms.
@@ -275,60 +302,47 @@ class TabularSynthesizer(api.DPMechanism):
     Raises:
       ValueError: If open-set attributes exist but delta is 0.
     """
-    num_open_set = sum(
-        isinstance(attr, domain.OpenSetCategoricalAttribute)
-        for attr in self.domains.values()
-    )
-    if num_open_set > 0 and delta <= 0:
-      raise ValueError(
-          'delta must be positive when open-set categorical attributes are'
-          ' present. It is used for Gaussian partition selection.'
-      )
-    # Split delta across open-set columns, analogous to splitting zcdp_rho.
-    # Under calibrate(), any delta not consumed here is automatically
-    # available for the zCDP-to-(epsilon, delta) conversion, so this
-    # simple additive split is tight.
-    thresholding_delta = self.init_budget_fraction * delta
-    per_col_delta = (
-        thresholding_delta / num_open_set if num_open_set > 0 else 0.0
-    )
+    api.validate_max_records_per_user(max_records_per_user)
+    per_col_deltas = self._compute_per_col_deltas(delta)
 
     inits = self.initializers
     if inits is None:
       inits = _create_initializers(
           self.domains,
           self.numerical_bins,
-          per_col_delta,
-          self.experimental_max_records_per_user,
       )
-    elif self.experimental_max_records_per_user > 1:
-      # The synthesizer's experimental_max_records_per_user is the single
-      # source of truth: the total-count and discrete mechanisms already use it,
-      # so propagate it to caller-supplied initializers too.
-      propagated = {}
-      for col, init in inits.items():
-        propagated[col] = dataclasses.replace(  # pyrefly: ignore[bad-specialization]
-            init, max_records_per_user=self.experimental_max_records_per_user
-        )
-      inits = propagated
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)
     discrete_rho = zcdp_rho - init_rho
 
+    calibrated_inits: dict[str, api.MechanismConfig | api.CalibratedMechanism]
+
     calibrated_inits = {
-        col: init.configure(zcdp_rho=per_col_rho) for col, init in inits.items()
+        col: (
+            typing.cast(api.MechanismConfig, init).configure(
+                zcdp_rho=per_col_rho,
+                delta=per_col_deltas[col],
+                max_records_per_user=max_records_per_user,
+            )
+        )
+        for col, init in inits.items()
     }
     total_count_sigma = math.sqrt(0.5 / per_col_rho)
-    calibrated_discrete = dataclasses.replace(
-        self.discrete_mechanism,
-        max_records_per_user=self.experimental_max_records_per_user,
-    ).configure(zcdp_rho=discrete_rho)
+
+    discrete_config = typing.cast(
+        discrete_mechanisms.DiscreteMechanismConfig, self.discrete_mechanism
+    )
+    calibrated_discrete = discrete_config.configure(
+        max_records_per_user=max_records_per_user,
+        zcdp_rho=discrete_rho,
+    )
     return dataclasses.replace(
         self,
         initializers=calibrated_inits,
         discrete_mechanism=calibrated_discrete,
         total_count_sigma=total_count_sigma,
+        max_records_per_user=max_records_per_user,
     )
 
   @property
@@ -345,11 +359,18 @@ class TabularSynthesizer(api.DPMechanism):
       raise ValueError(
           'Must call configure() or calibrate() before accessing dp_event.'
       )
-    events = [init.dp_event for init in self.initializers.values()]
+    events = [
+        typing.cast(api.CalibratedMechanism, init).dp_event
+        for init in self.initializers.values()
+    ]
     events.append(
         dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
     )
-    events.append(self.discrete_mechanism.dp_event)
+    events.append(
+        typing.cast(
+            discrete_mechanisms.DiscreteMechanism, self.discrete_mechanism
+        ).dp_event
+    )
     return dp_accounting.ComposedDpEvent(events)
 
   def __call__(
@@ -369,7 +390,11 @@ class TabularSynthesizer(api.DPMechanism):
       ValueError: If configure() has not been called or if required columns are
         missing from the input data.
     """
-    if self.initializers is None or self.total_count_sigma is None:
+    if (
+        self.initializers is None
+        or self.total_count_sigma is None
+        or self.max_records_per_user is None
+    ):
       raise ValueError(
           'Must call configure() or calibrate() before running the mechanism.'
       )
@@ -386,18 +411,18 @@ class TabularSynthesizer(api.DPMechanism):
         rng,
         len(data),
         self.total_count_sigma,
-        self.experimental_max_records_per_user,
+        self.max_records_per_user,
     )
     total = max(1.0, noisy_total)
-    k = self.experimental_max_records_per_user
     total_measurement = mbi.LinearMeasurement(
         np.array([total]),  # pyrefly: ignore[bad-argument-type]
         (),
-        stddev=k * self.total_count_sigma,
+        stddev=self.max_records_per_user * self.total_count_sigma,
     )
 
     results: dict[str, initialization.ColumnMeasurement] = {}
-    for col, init in self.initializers.items():
+    for col, init_ in self.initializers.items():
+      init = typing.cast(api.CalibratedMechanism, init_)
       if isinstance(init, initialization.NumericalInitializer):
         results[col] = init(rng, data[col].values, estimated_total=float(total))
       else:
@@ -416,7 +441,9 @@ class TabularSynthesizer(api.DPMechanism):
     mbi_constraints = tuple(
         c.to_mbi() for c in self.cross_attribute_constraints
     )
-    mechanism_result = self.discrete_mechanism(
+    mechanism_result = typing.cast(
+        discrete_mechanisms.DiscreteMechanism, self.discrete_mechanism
+    )(
         rng,
         data=discrete,
         initial_measurements=initial_measurements,

@@ -29,7 +29,7 @@ import pandas as pd
 
 synth = dpsynth.TabularSynthesizer(
     domains=domains,
-    discrete_mechanism=discrete_mechanisms.MSTMechanism(),
+    discrete_mechanism=discrete_mechanisms.MSTConfig(),
 )
 result = synth.calibrate(
     epsilon=1.0,
@@ -45,7 +45,7 @@ synthetic_df = result.synthetic_data
     ([`CategoricalAttribute`, `NumericalAttribute`, or `OpenSetCategoricalAttribute`](data_and_terminology.md)).
     Every key must exist in `data.columns`.
 *   `epsilon`, `delta`: Total differential privacy budget parameters.
-*   `discrete_config`: Configuration object specifying which DP synthesis
+*   `discrete_mechanism`: Configuration object specifying which DP synthesis
     mechanism to run (e.g., `MSTConfig()`, `AIMConfig()`,
     `IndependentConfig()`).
 *   `numerical_bins`: Number of equal-frequency quantile buckets used to

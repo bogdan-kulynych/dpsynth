@@ -60,12 +60,12 @@ def _rows_fn(rows):
 class NumericalHistogramTest(absltest.TestCase):
 
   def _run(self, rows, attr, max_grid_size=101, num_partitions=4):
-    init = initialization.NumericalInitializer(
+    init = initialization.NumericalInitializerConfig(
         name='x',
         num_partitions=num_partitions,
         attribute=attr,
         max_grid_size=max_grid_size,
-    ).configure(zcdp_rho=np.inf)
+    )
     del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
@@ -78,13 +78,15 @@ class NumericalHistogramTest(absltest.TestCase):
 
   def _ref_counts(self, values, attr, max_grid_size=101, num_partitions=4):
     """In-memory grid histogram as an {index: count} dict."""
-    init = initialization.NumericalInitializer(
+    init = initialization.NumericalInitializerConfig(
         name='x',
         num_partitions=num_partitions,
         attribute=attr,
         max_grid_size=max_grid_size,
-    ).configure(zcdp_rho=np.inf)
-    dense = init._grid_histogram(np.asarray(values, dtype=float))
+    )
+    dense = init.configure(zcdp_rho=np.inf)._grid_histogram(
+        np.asarray(values, dtype=float)
+    )
     return {i: int(c) for i, c in enumerate(dense) if c}
 
   def test_basic_histogram(self):
@@ -162,10 +164,10 @@ class CategoricalCountsTest(absltest.TestCase):
         possible_values=['unk', 'a', 'b', 'c'],
         out_of_domain_index=0,
     )
-    init = initialization.CategoricalInitializer(
+    init = initialization.CategoricalInitializerConfig(
         name='col',
         attribute=attr,
-    ).configure(zcdp_rho=np.inf)
+    )
     rows = [
         {'col': 'a'},
         {'col': 'a'},
@@ -195,9 +197,9 @@ class OpenSetCountsTest(absltest.TestCase):
 
   def test_basic_counts(self):
     attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
-    init = initialization.OpenSetCategoricalInitializer(
-        name='col', attribute=attr, delta=0.01, min_count=1
-    ).configure(zcdp_rho=np.inf)
+    init = initialization.OpenSetInitializerConfig(
+        name='col', attribute=attr, min_count=1
+    )
     rows = [
         {'col': 'apple'},
         {'col': 'apple'},
@@ -229,20 +231,14 @@ class RunFromSummaryTest(absltest.TestCase):
     open_attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
 
     initializers = {
-        'score': (
-            initialization.NumericalInitializer(
-                name='score', num_partitions=4, attribute=num_attr
-            ).configure(zcdp_rho=np.inf)
+        'score': initialization.NumericalInitializerConfig(
+            name='score', num_partitions=4, attribute=num_attr
         ),
-        'grade': (
-            initialization.CategoricalInitializer(
-                name='grade', attribute=cat_attr
-            ).configure(zcdp_rho=np.inf)
+        'grade': initialization.CategoricalInitializerConfig(
+            name='grade', attribute=cat_attr
         ),
-        'tag': (
-            initialization.OpenSetCategoricalInitializer(
-                name='tag', attribute=open_attr, delta=0.01, min_count=1
-            ).configure(zcdp_rho=np.inf)
+        'tag': initialization.OpenSetInitializerConfig(
+            name='tag', attribute=open_attr, min_count=1
         ),
     }
 
@@ -262,9 +258,11 @@ class RunFromSummaryTest(absltest.TestCase):
           | beam_adapter.ComputeSufficientStats(initializers)
       )
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
-    measurements = beam_adapter.run_from_summary(
-        _test_results[0], initializers, rng
-    )
+    inits = {
+        k: v.configure(zcdp_rho=np.inf, delta=1)
+        for k, v in initializers.items()
+    }
+    measurements = beam_adapter.run_from_summary(_test_results[0], inits, rng)
 
     self.assertLen(measurements, 3)
     for cm in measurements.values():
@@ -276,16 +274,16 @@ class ComputeMarginalsTest(absltest.TestCase):
   def test_marginals_match_manual_counts(self):
     cat_attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
     num_attr = domain.NumericalAttribute(min_value=0, max_value=10)
-    cat_init = initialization.CategoricalInitializer(
+    cat_init = initialization.CategoricalInitializerConfig(
         name='color',
         attribute=cat_attr,
-    ).configure(zcdp_rho=np.inf)
-    num_init = initialization.NumericalInitializer(
+    )
+    num_init = initialization.NumericalInitializerConfig(
         name='size',
         num_partitions=4,
         attribute=num_attr,
         max_grid_size=11,
-    ).configure(zcdp_rho=np.inf)
+    )
     domains = {'color': cat_attr, 'size': num_attr}
     rows = [
         {'color': 'a', 'size': 0},
@@ -307,7 +305,11 @@ class ComputeMarginalsTest(absltest.TestCase):
           | beam_adapter.ComputeSufficientStats(inits)
       )
       _ = stats | 'ToDict1' >> beam.combiners.ToDict() | beam.Map(_store)
-    cms = beam_adapter.run_from_summary(_test_results[0], inits, rng)
+    cms = beam_adapter.run_from_summary(
+        _test_results[0],
+        {k: v.configure(zcdp_rho=np.inf) for k, v in inits.items()},
+        rng,
+    )
 
     # Stage 2: compute marginals.
     workload = [('color',), ('size',), ('color', 'size')]
@@ -351,9 +353,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
   def test_end_to_end_generates_synthetic_data(self):
     synth = data_generation_v3.TabularSynthesizer(domains=self._domains())
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=100.0
-
     )
     rows = [
         {'color': 'r', 'size': 's'},
@@ -375,9 +375,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     }
     synth = data_generation_v3.TabularSynthesizer(domains=domains)
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=100.0
-
     )
     rng_data = np.random.default_rng(0)
     rows = [
@@ -395,14 +393,14 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     self.assertCountEqual(result.synthetic_data.columns, ['age', 'grade'])
 
   @parameterized.named_parameters(
-      ('mst', discrete_mechanisms.MSTMechanism(pgm_iters=250)),
+      ('mst', discrete_mechanisms.MSTConfig(pgm_iters=250)),
       (
           'independent',
-          discrete_mechanisms.IndependentMechanism(pgm_iters=250),
+          discrete_mechanisms.IndependentConfig(pgm_iters=250),
       ),
       (
           'direct',
-          discrete_mechanisms.DirectMechanism(
+          discrete_mechanisms.DirectConfig(
               prespecified_marginal_queries=[('a',), ('b',), ('a', 'b')],
               pgm_iters=250,
           ),
@@ -418,9 +416,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         domains=domains, discrete_mechanism=mechanism
     )
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=100.0
-
     )
     rows = [
         {'a': 'x', 'b': 'p'},
@@ -439,9 +435,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
     synth = data_generation_v3.TabularSynthesizer(domains=domains)
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=1e8
-
     )
     rows = [{'a': 'x'}, {'a': 'y'}] * 150  # 300 rows.
 
@@ -463,9 +457,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         domains=domains, cross_attribute_constraints=(constraint,)
     )
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=100.0
-
     )
     # The data never contains (a0, b1). Without enforcement, independent
     # (a, b) marginals would put ~25% of mass on that cell; forwarding the
@@ -492,9 +484,7 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     }
     synth = data_generation_v3.TabularSynthesizer(domains=domains)
     beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-
         zcdp_rho=100.0
-
     )
     rows = [
         {'z': 'a', 'm': 'c', 'a': 'e'},
