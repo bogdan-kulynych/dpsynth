@@ -19,6 +19,8 @@ __version__ = '0.2.0'
 from dpsynth import api
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
+from dpsynth.data_generation_v3 import TabularConfig
+from dpsynth.data_generation_v3 import TabularMechanism
 from dpsynth.data_generation_v3 import TabularSynthesizer
 from dpsynth.domain import CategoricalAttribute
 from dpsynth.domain import NumericalAttribute

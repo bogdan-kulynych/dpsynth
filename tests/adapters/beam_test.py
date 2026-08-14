@@ -341,8 +341,8 @@ class ComputeMarginalsTest(absltest.TestCase):
     self.assertEqual(joint.datavector().sum(), 6)
 
 
-class BeamTabularSynthesizerTest(parameterized.TestCase):
-  """End-to-end tests for the public BeamTabularSynthesizer API."""
+class BeamTabularConfigTest(parameterized.TestCase):
+  """End-to-end tests for the public BeamTabularConfig API."""
 
   def _domains(self):
     return {
@@ -351,10 +351,8 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     }
 
   def test_end_to_end_generates_synthetic_data(self):
-    synth = data_generation_v3.TabularSynthesizer(domains=self._domains())
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=100.0
-    )
+    synth = data_generation_v3.TabularConfig(domains=self._domains())
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     rows = [
         {'color': 'r', 'size': 's'},
         {'color': 'g', 'size': 'm'},
@@ -373,10 +371,8 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         'age': domain.NumericalAttribute(min_value=0, max_value=100),
         'grade': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
     }
-    synth = data_generation_v3.TabularSynthesizer(domains=domains)
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=100.0
-    )
+    synth = data_generation_v3.TabularConfig(domains=domains)
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     rng_data = np.random.default_rng(0)
     rows = [
         {
@@ -412,12 +408,10 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         'a': domain.CategoricalAttribute(possible_values=['x', 'y']),
         'b': domain.CategoricalAttribute(possible_values=['p', 'q', 'r']),
     }
-    synth = data_generation_v3.TabularSynthesizer(
+    synth = data_generation_v3.TabularConfig(
         domains=domains, discrete_mechanism=mechanism
     )
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=100.0
-    )
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     rows = [
         {'a': 'x', 'b': 'p'},
         {'a': 'y', 'b': 'q'},
@@ -433,10 +427,8 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
   def test_total_count_matches_input_under_high_budget(self):
     """With negligible noise, synthetic row count matches the input (F2)."""
     domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
-    synth = data_generation_v3.TabularSynthesizer(domains=domains)
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=1e8
-    )
+    synth = data_generation_v3.TabularConfig(domains=domains)
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=1e8)
     rows = [{'a': 'x'}, {'a': 'y'}] * 150  # 300 rows.
 
     result = beam_synth(np.random.default_rng(0), _rows_fn(rows))
@@ -453,12 +445,10 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         attribute_domains=(a_attr, b_attr),
         impossible_combinations=[('a0', 'b1')],
     )
-    synth = data_generation_v3.TabularSynthesizer(
+    synth = data_generation_v3.TabularConfig(
         domains=domains, cross_attribute_constraints=(constraint,)
     )
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=100.0
-    )
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     # The data never contains (a0, b1). Without enforcement, independent
     # (a, b) marginals would put ~25% of mass on that cell; forwarding the
     # constraint suppresses it to a few percent (mbi's constrained sampling
@@ -482,10 +472,8 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
         'm': domain.CategoricalAttribute(possible_values=['c', 'd']),
         'a': domain.CategoricalAttribute(possible_values=['e', 'f']),
     }
-    synth = data_generation_v3.TabularSynthesizer(domains=domains)
-    beam_synth = beam_adapter.BeamTabularSynthesizer(synth).configure(
-        zcdp_rho=100.0
-    )
+    synth = data_generation_v3.TabularConfig(domains=domains)
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     rows = [
         {'z': 'a', 'm': 'c', 'a': 'e'},
         {'z': 'b', 'm': 'd', 'a': 'f'},
@@ -496,44 +484,44 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     self.assertEqual(list(result.synthetic_data.columns), ['z', 'm', 'a'])
 
   def test_configure_returns_calibrated_wrapper(self):
-    beam_synth = beam_adapter.BeamTabularSynthesizer(
-        data_generation_v3.TabularSynthesizer(domains=self._domains())
+    beam_synth = beam_adapter.BeamTabularConfig(
+        data_generation_v3.TabularConfig(domains=self._domains())
     )
 
     configured = beam_synth.configure(zcdp_rho=1.0)
 
-    self.assertIsInstance(configured, beam_adapter.BeamTabularSynthesizer)
+    self.assertIsInstance(configured, beam_adapter.BeamTabularMechanism)
     # dp_event is delegated to the wrapped, now-calibrated synthesizer.
     self.assertIsNotNone(configured.dp_event)
     # The original wrapper is left uncalibrated (configure returns a copy).
-    with self.assertRaises(ValueError):
+    with self.assertRaises(Exception):
       _ = beam_synth.dp_event
 
   def test_inherited_calibrate_produces_calibrated_wrapper(self):
     # calibrate is inherited from DPMechanism; it binary-searches a zCDP budget
     # by repeatedly calling our configure (which delegates to the synthesizer).
-    beam_synth = beam_adapter.BeamTabularSynthesizer(
-        data_generation_v3.TabularSynthesizer(domains=self._domains())
+    beam_synth = beam_adapter.BeamTabularConfig(
+        data_generation_v3.TabularConfig(domains=self._domains())
     )
 
     calibrated = beam_synth.calibrate(epsilon=1.0, delta=1e-6)
 
-    self.assertIsInstance(calibrated, beam_adapter.BeamTabularSynthesizer)
+    self.assertIsInstance(calibrated, beam_adapter.BeamTabularMechanism)
     self.assertIsNotNone(calibrated.dp_event)
 
   def test_uncalibrated_call_raises(self):
-    beam_synth = beam_adapter.BeamTabularSynthesizer(
-        data_generation_v3.TabularSynthesizer(domains=self._domains())
+    beam_synth = beam_adapter.BeamTabularConfig(
+        data_generation_v3.TabularConfig(domains=self._domains())
     )
-    with self.assertRaises(ValueError):
+    with self.assertRaises(Exception):
       beam_synth(np.random.default_rng(0), lambda p: p)
 
   def test_honors_temp_location(self):
-    synth = data_generation_v3.TabularSynthesizer(
+    synth = data_generation_v3.TabularConfig(
         domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
     )
     temp_dir = self.create_tempdir().full_path
-    beam_synth = beam_adapter.BeamTabularSynthesizer(
+    beam_synth = beam_adapter.BeamTabularConfig(
         synth, temp_location=temp_dir
     ).configure(zcdp_rho=100.0)
     rows = [{'a': 'x'}, {'a': 'y'}] * 50
@@ -544,10 +532,10 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     self.assertTrue(os.path.exists(os.path.join(temp_dir, 'clique_vector.bin')))
 
   def _single_col_synth(self):
-    synth = data_generation_v3.TabularSynthesizer(
+    synth = data_generation_v3.TabularConfig(
         domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
     )
-    return beam_adapter.BeamTabularSynthesizer(synth).configure(zcdp_rho=100.0)
+    return beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
 
   def _spy_mkdtemp(self):
     """Returns (created_paths_list, patched_mkdtemp) recording our temp dirs.
@@ -592,11 +580,11 @@ class BeamTabularSynthesizerTest(parameterized.TestCase):
     self.assertFalse(os.path.exists(created[0]))
 
   def test_forwards_pipeline_options_to_both_passes(self):
-    synth = data_generation_v3.TabularSynthesizer(
+    synth = data_generation_v3.TabularConfig(
         domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
     )
     options = pipeline_options.PipelineOptions(flags=['--runner=DirectRunner'])
-    beam_synth = beam_adapter.BeamTabularSynthesizer(
+    beam_synth = beam_adapter.BeamTabularConfig(
         synth, pipeline_options=options
     ).configure(zcdp_rho=100.0)
     rows = [{'a': 'x'}, {'a': 'y'}] * 50

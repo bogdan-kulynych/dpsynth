@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import dataclasses
 import math
-import typing
+import warnings
 
 from absl import logging
 import dp_accounting
@@ -184,21 +184,132 @@ class DataGenerationResult:
   codec: TabularCodec
 
 
-# TabularSynthesizer acting as both a config and a mechanism. This will be
-# addressed in a future refactoring.
 @dataclasses.dataclass
-class TabularSynthesizer(api.DPMechanism):
-  """End-to-end DP synthetic data generation mechanism.
+class TabularMechanism(api.CalibratedMechanism):
+  """End-to-end DP synthetic tabular data generation, calibrated and runnable.
 
-  This mechanism encodes input categorical and numerical data into a discrete
+  Attributes:
+    domains: Mapping from column names to attribute domain specifications.
+    calibrated_discrete_mechanism: The calibrated discrete mechanism.
+    calibrated_initializers: Per-column calibrated initializers.
+    total_count_sigma: Sigma for the total-count mechanism.
+    cross_attribute_constraints: Constraints to enforce on generated data.
+    max_records_per_user: Assumed upper bound on the number of records a single
+      user contributes.
+  """
+
+  domains: Mapping[str, domain.AttributeType]
+  calibrated_discrete_mechanism: discrete_mechanisms.DiscreteMechanism
+  calibrated_initializers: dict[str, api.CalibratedMechanism]
+  total_count_sigma: float = dataclasses.field(repr=False)
+  cross_attribute_constraints: Sequence[constraints.Constraint] = ()
+  max_records_per_user: int = 1
+
+  @property
+  def dp_event(self) -> dp_accounting.DpEvent:
+    """Returns the composed DpEvent for all sub-mechanisms.
+
+    Returns:
+      A ComposedDpEvent combining all initializer and discrete mechanism events.
+    """
+    events = [init.dp_event for init in self.calibrated_initializers.values()]
+    events.append(
+        dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
+    )
+    events.append(self.calibrated_discrete_mechanism.dp_event)
+    return dp_accounting.ComposedDpEvent(events)
+
+  def __call__(
+      self, rng: np.random.Generator, data: pd.DataFrame
+  ) -> DataGenerationResult:
+    """Generates differentially private synthetic data.
+
+    Args:
+      rng: A numpy random number generator.
+      data: The dataset to generate synthetic data for. Must contain all columns
+        specified in ``domains``.
+
+    Returns:
+      A DataGenerationResult containing the synthetic DataFrame.
+
+    Raises:
+      ValueError: If required columns are missing from the input data.
+    """
+    for col in self.domains:
+      if col not in data.columns:
+        raise ValueError(
+            f'{col=} not found in dataset. Available: {list(data.columns)}'
+        )
+
+    # Phase 1: Per-column initialization.
+    # Measure total count first, then run per-column initializers.
+
+    noisy_total = primitives.add_gaussian_noise(
+        rng,
+        len(data),
+        self.total_count_sigma,
+        self.max_records_per_user,
+    )
+    total = max(1.0, noisy_total)
+    total_measurement = mbi.LinearMeasurement(
+        np.array([total]),  # pyrefly: ignore[bad-argument-type]
+        (),
+        stddev=self.max_records_per_user * self.total_count_sigma,
+    )
+
+    results: dict[str, initialization.ColumnMeasurement] = {}
+    for col, init in self.calibrated_initializers.items():
+      if isinstance(init, initialization.NumericalInitializer):
+        results[col] = init(rng, data[col].values, estimated_total=float(total))
+      else:
+        results[col] = init(rng, data[col].values)
+
+    # Phase 2: Encode data to the discrete domain.
+    codec = TabularCodec.from_measurements(results, self.domains)
+    discrete = codec.encode(data)
+    logging.info('[DPSynth]: Finished encoding data.')
+
+    # Phase 3: Run the discrete mechanism and decode back to the input domain.
+    # Feed the noisy total (clique ()) and one-way column measurements as
+    # initial measurements so the mechanism does not re-measure them.
+    column_order = [col for col in data.columns if col in self.domains]
+    initial_measurements = [total_measurement, *codec.one_way_measurements()]
+    mbi_constraints = tuple(
+        c.to_mbi() for c in self.cross_attribute_constraints
+    )
+    mechanism_result = self.calibrated_discrete_mechanism(
+        rng,
+        data=discrete,
+        initial_measurements=initial_measurements,
+        constraints=mbi_constraints,
+    )
+    logging.info('[DPSynth]: Generated discrete synthetic data.')
+
+    synthetic_data = codec.decode(
+        mechanism_result.synthetic_data, rng, column_order
+    )
+    logging.info('[DPSynth]: Converted data back to original domain.')
+
+    return DataGenerationResult(
+        synthetic_data=synthetic_data,
+        discrete_mechanism_result=mechanism_result,
+        codec=codec,
+    )
+
+
+@dataclasses.dataclass
+class TabularConfig(api.MechanismConfig):
+  """Configures end-to-end DP synthetic data generation.
+
+  This config encodes input categorical and numerical data into a discrete
   domain using local mode primitives, runs a discrete mechanism on the
   discretized data, and converts the synthetic output back to the original
   domain.
 
   Usage::
 
-      synth = TabularSynthesizer(domains=domains)
-      calibrated = synth.configure(zcdp_rho=1.0)
+      config = TabularConfig(domains=domains)
+      calibrated = config.configure(zcdp_rho=1.0)
       result = calibrated(rng, df)
       synthetic_df = result.synthetic_data
 
@@ -208,32 +319,17 @@ class TabularSynthesizer(api.DPMechanism):
     numerical_bins: Number of bins for numerical attribute discretization.
     init_budget_fraction: Fraction of total zCDP budget allocated to per-column
       initialization (the rest goes to the discrete mechanism).
-    initializers: Per-column initializer mechanisms. If None, created
-      automatically from ``domains`` during ``configure()``.
-    total_count_sigma: Sigma for the total-count mechanism. If None, set
-      automatically during ``configure()``.
     cross_attribute_constraints: Constraints to enforce on generated data.
-    max_records_per_user: EXPERIMENTAL and subject to change. Assumed upper
-      bound on the number of records a single user contributes. Values greater
-      than 1 scale the added noise (and mechanism sensitivity) to provide
-      user-level rather than record-level DP; the privacy accounting is
-      unchanged. This bound is NOT enforced -- soundness relies on the caller
-      guaranteeing it via preprocessing.
   """
 
   domains: Mapping[str, domain.AttributeType]
-  discrete_mechanism: (
-      discrete_mechanisms.DiscreteMechanismConfig
-      | discrete_mechanisms.DiscreteMechanism
-  ) = dataclasses.field(default_factory=discrete_mechanisms.MSTConfig)
+  discrete_mechanism: discrete_mechanisms.DiscreteMechanismConfig = (
+      dataclasses.field(default_factory=discrete_mechanisms.MSTConfig)
+  )
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
-  initializers: (
-      dict[str, api.MechanismConfig | api.CalibratedMechanism] | None
-  ) = None
-  total_count_sigma: float | None = dataclasses.field(default=None, repr=False)
+  initializers: dict[str, api.MechanismConfig] | None = None
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
-  max_records_per_user: int | None = None
 
   def _compute_per_col_deltas(self, delta):
     # Split delta across open-set columns, analogous to splitting zcdp_rho.
@@ -266,8 +362,8 @@ class TabularSynthesizer(api.DPMechanism):
       zcdp_rho: float,
       delta: float = 0.0,
       max_records_per_user: int = 1,
-  ) -> TabularSynthesizer:
-    """Returns a copy configured with the given privacy budget.
+  ) -> TabularMechanism:
+    """Returns a calibrated mechanism configured with the given privacy budget.
 
     Splits the budget additively, just as it does for ``zcdp_rho``:
 
@@ -297,7 +393,7 @@ class TabularSynthesizer(api.DPMechanism):
         preprocessing.
 
     Returns:
-      A new TabularSynthesizer with calibrated sub-mechanisms.
+      A calibrated TabularMechanism ready to be run on tabular data.
 
     Raises:
       ValueError: If open-set attributes exist but delta is 0.
@@ -305,159 +401,51 @@ class TabularSynthesizer(api.DPMechanism):
     api.validate_max_records_per_user(max_records_per_user)
     per_col_deltas = self._compute_per_col_deltas(delta)
 
-    inits = self.initializers
-    if inits is None:
-      inits = _create_initializers(
-          self.domains,
-          self.numerical_bins,
-      )
+    inits = (
+        self.initializers
+        if self.initializers is not None
+        else _create_initializers(self.domains, self.numerical_bins)
+    )
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)
     discrete_rho = zcdp_rho - init_rho
 
-    calibrated_inits: dict[str, api.MechanismConfig | api.CalibratedMechanism]
+    calibrated_inits: dict[str, api.CalibratedMechanism]
 
     calibrated_inits = {
-        col: (
-            typing.cast(api.MechanismConfig, init).configure(
-                zcdp_rho=per_col_rho,
-                delta=per_col_deltas[col],
-                max_records_per_user=max_records_per_user,
-            )
+        col: init.configure(
+            zcdp_rho=per_col_rho,
+            delta=per_col_deltas[col],
+            max_records_per_user=max_records_per_user,
         )
         for col, init in inits.items()
     }
     total_count_sigma = math.sqrt(0.5 / per_col_rho)
 
-    discrete_config = typing.cast(
-        discrete_mechanisms.DiscreteMechanismConfig, self.discrete_mechanism
-    )
-    calibrated_discrete = discrete_config.configure(
+    calibrated_discrete = self.discrete_mechanism.configure(
         max_records_per_user=max_records_per_user,
         zcdp_rho=discrete_rho,
     )
-    return dataclasses.replace(
-        self,
-        initializers=calibrated_inits,
-        discrete_mechanism=calibrated_discrete,
+
+    return TabularMechanism(
+        domains=self.domains,
+        calibrated_discrete_mechanism=calibrated_discrete,
+        calibrated_initializers=calibrated_inits,
         total_count_sigma=total_count_sigma,
         max_records_per_user=max_records_per_user,
+        cross_attribute_constraints=self.cross_attribute_constraints,
     )
 
-  @property
-  def dp_event(self) -> dp_accounting.DpEvent:
-    """Returns the composed DpEvent for all sub-mechanisms.
 
-    Returns:
-      A ComposedDpEvent combining all initializer and discrete mechanism events.
+@dataclasses.dataclass
+class TabularSynthesizer(TabularConfig):
+  """Deprecated. Use TabularConfig and TabularMechanism instead."""
 
-    Raises:
-      ValueError: If configure() has not been called.
-    """
-    if self.initializers is None or self.total_count_sigma is None:
-      raise ValueError(
-          'Must call configure() or calibrate() before accessing dp_event.'
-      )
-    events = [
-        typing.cast(api.CalibratedMechanism, init).dp_event
-        for init in self.initializers.values()
-    ]
-    events.append(
-        dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
-    )
-    events.append(
-        typing.cast(
-            discrete_mechanisms.DiscreteMechanism, self.discrete_mechanism
-        ).dp_event
-    )
-    return dp_accounting.ComposedDpEvent(events)
-
-  def __call__(
-      self, rng: np.random.Generator, data: pd.DataFrame
-  ) -> DataGenerationResult:
-    """Generates differentially private synthetic data.
-
-    Args:
-      rng: A numpy random number generator.
-      data: The dataset to generate synthetic data for. Must contain all columns
-        specified in ``domains``.
-
-    Returns:
-      A DataGenerationResult containing the synthetic DataFrame.
-
-    Raises:
-      ValueError: If configure() has not been called or if required columns are
-        missing from the input data.
-    """
-    if (
-        self.initializers is None
-        or self.total_count_sigma is None
-        or self.max_records_per_user is None
-    ):
-      raise ValueError(
-          'Must call configure() or calibrate() before running the mechanism.'
-      )
-    for col in self.domains:
-      if col not in data.columns:
-        raise ValueError(
-            f'{col=} not found in dataset. Available: {list(data.columns)}'
-        )
-
-    # Phase 1: Per-column initialization.
-    # Measure total count first, then run per-column initializers.
-
-    noisy_total = primitives.add_gaussian_noise(
-        rng,
-        len(data),
-        self.total_count_sigma,
-        self.max_records_per_user,
-    )
-    total = max(1.0, noisy_total)
-    total_measurement = mbi.LinearMeasurement(
-        np.array([total]),  # pyrefly: ignore[bad-argument-type]
-        (),
-        stddev=self.max_records_per_user * self.total_count_sigma,
-    )
-
-    results: dict[str, initialization.ColumnMeasurement] = {}
-    for col, init_ in self.initializers.items():
-      init = typing.cast(api.CalibratedMechanism, init_)
-      if isinstance(init, initialization.NumericalInitializer):
-        results[col] = init(rng, data[col].values, estimated_total=float(total))
-      else:
-        results[col] = init(rng, data[col].values)
-
-    # Phase 2: Encode data to the discrete domain.
-    codec = TabularCodec.from_measurements(results, self.domains)
-    discrete = codec.encode(data)
-    logging.info('[DPSynth]: Finished encoding data.')
-
-    # Phase 3: Run the discrete mechanism and decode back to the input domain.
-    # Feed the noisy total (clique ()) and one-way column measurements as
-    # initial measurements so the mechanism does not re-measure them.
-    column_order = [col for col in data.columns if col in self.domains]
-    initial_measurements = [total_measurement, *codec.one_way_measurements()]
-    mbi_constraints = tuple(
-        c.to_mbi() for c in self.cross_attribute_constraints
-    )
-    mechanism_result = typing.cast(
-        discrete_mechanisms.DiscreteMechanism, self.discrete_mechanism
-    )(
-        rng,
-        data=discrete,
-        initial_measurements=initial_measurements,
-        constraints=mbi_constraints,
-    )
-    logging.info('[DPSynth]: Generated discrete synthetic data.')
-
-    synthetic_data = codec.decode(
-        mechanism_result.synthetic_data, rng, column_order
-    )
-    logging.info('[DPSynth]: Converted data back to original domain.')
-
-    return DataGenerationResult(
-        synthetic_data=synthetic_data,
-        discrete_mechanism_result=mechanism_result,
-        codec=codec,
+  def __post_init__(self):
+    warnings.warn(
+        'TabularSynthesizer is deprecated. Use TabularConfig for configuration '
+        'and TabularMechanism for the calibrated runnable mechanism.',
+        DeprecationWarning,
+        stacklevel=2,
     )

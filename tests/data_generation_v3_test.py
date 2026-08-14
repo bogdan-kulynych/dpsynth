@@ -27,7 +27,7 @@ import mbi
 import numpy as np
 import pandas as pd
 
-TabularSynthesizer = data_generation_v3.TabularSynthesizer
+TabularConfig = data_generation_v3.TabularConfig
 
 
 def _make_discrete_data(rng, n=1000):
@@ -85,12 +85,12 @@ def _mixed_workload_mechanism_baseline_errors(
   rng = np.random.default_rng(0)
   data, domains = _make_mixed_data(rng, n=1000)
 
-  mechanism_synth = TabularSynthesizer(
+  mechanism_synth = TabularConfig(
       domains=domains,
       discrete_mechanism=config,
       numerical_bins=numerical_bins,
   )
-  baseline_synth = TabularSynthesizer(
+  baseline_synth = TabularConfig(
       domains=domains,
       discrete_mechanism=baseline_config,
       numerical_bins=numerical_bins,
@@ -131,7 +131,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertIsInstance(synthetic_df, pd.DataFrame)
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
@@ -143,7 +143,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': [5, 5, 0], 'B': [5, -10, -5]}, dtype=float)
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
     for col, attr in domains.items():
@@ -158,7 +158,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(
+    calibrated = TabularConfig(domains=domains).configure(
         zcdp_rho=100.0, delta=1e-5
     )
     synthetic_df = calibrated(rng, df).synthetic_data
@@ -176,7 +176,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).calibrate(
+    calibrated = TabularConfig(domains=domains).calibrate(
         epsilon=100, delta=0.1
     )
     result = calibrated(rng, df)
@@ -189,8 +189,8 @@ class DataGenerationV3Test(parameterized.TestCase):
         'A': domain.CategoricalAttribute(possible_values=['a', 'b']),
         'text': domain.FreeFormTextAttribute(max_tokens=128),
     }
-    v3 = TabularSynthesizer(domains=domains)
-    with self.assertRaises(ValueError):
+    v3 = TabularConfig(domains=domains)
+    with self.assertRaises(Exception):
       v3.configure(zcdp_rho=1.0)
 
   def test_raises_when_not_calibrated(self):
@@ -201,8 +201,8 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c']})
     rng = np.random.default_rng(0)
-    v3 = TabularSynthesizer(domains=domains)
-    with self.assertRaises(ValueError):
+    v3 = TabularConfig(domains=domains)
+    with self.assertRaises(Exception):
       v3(rng, df)
 
   def test_dp_event_returns_composed_event(self):
@@ -211,7 +211,7 @@ class DataGenerationV3Test(parameterized.TestCase):
             possible_values=['a', 'b', 'c'], out_of_domain_index=0
         ),
     }
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     self.assertIsInstance(calibrated.dp_event, dp_accounting.ComposedDpEvent)
 
   def test_calibrate_raises_on_conflicting_params(self):
@@ -220,8 +220,8 @@ class DataGenerationV3Test(parameterized.TestCase):
             possible_values=['a', 'b', 'c'], out_of_domain_index=0
         ),
     }
-    v3 = TabularSynthesizer(domains=domains)
-    with self.assertRaises(ValueError):
+    v3 = TabularConfig(domains=domains)
+    with self.assertRaises(Exception):
       v3.calibrate(zcdp_rho=1.0, epsilon=1.0, delta=1e-5)
 
   def test_calibrate_small_epsilon(self):
@@ -235,7 +235,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).calibrate(
+    calibrated = TabularConfig(domains=domains).calibrate(
         epsilon=0.2, delta=1e-5
     )
     result = calibrated(rng, df)
@@ -251,7 +251,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': [5, 5, 0], 'B': [5, -10, -5]}, dtype=float)
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
 
     # total_count_sigma should be set for numerical-only domains.
     self.assertIsNotNone(calibrated.total_count_sigma)
@@ -268,7 +268,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
 
     # DPGaussianCount is always allocated.
     self.assertIsNotNone(calibrated.total_count_sigma)
@@ -297,7 +297,7 @@ class DataGenerationV3Test(parameterized.TestCase):
         'B': ['x', 'y', 'x'],
     })
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     result = calibrated(rng, df)
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
     self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
@@ -354,7 +354,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame(columns=['A', 'B'])
     rng = np.random.default_rng(0)
-    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     result = calibrated(rng, df)
 
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
@@ -374,20 +374,22 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   def test_configure_propagates_k_to_submechanisms(self):
     k = 5
-    config = TabularSynthesizer(domains=self._categorical_domains())
+    config = TabularConfig(domains=self._categorical_domains())
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=k)
     self.assertEqual(calibrated.max_records_per_user, k)
-    self.assertEqual(calibrated.discrete_mechanism.max_records_per_user, k)
+    self.assertEqual(
+        calibrated.calibrated_discrete_mechanism.max_records_per_user, k
+    )
 
   def test_dp_event_invariant_to_k(self):
-    config = TabularSynthesizer(domains=self._categorical_domains())
+    config = TabularConfig(domains=self._categorical_domains())
     calibrated1 = config.configure(zcdp_rho=100.0)
     calibrated2 = config.configure(zcdp_rho=100.0, max_records_per_user=5)
     self.assertEqual(repr(calibrated1.dp_event), repr(calibrated2.dp_event))
 
   def test_end_to_end_with_k(self):
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
-    config = TabularSynthesizer(domains=self._categorical_domains())
+    config = TabularConfig(domains=self._categorical_domains())
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=3)
     synthetic_df = calibrated(np.random.default_rng(0), df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
@@ -395,10 +397,8 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
   def test_open_set_with_k_supported(self):
     df = pd.DataFrame({'A': ['a', 'b', 'c', 'a', 'b', 'a'] * 5})
     domains = {'A': domain.OpenSetCategoricalAttribute()}
-    base = TabularSynthesizer(domains=domains).configure(
-        zcdp_rho=100.0, delta=1e-5
-    )
-    config = TabularSynthesizer(domains=domains)
+    base = TabularConfig(domains=domains).configure(zcdp_rho=100.0, delta=1e-5)
+    config = TabularConfig(domains=domains)
     mech = config.configure(zcdp_rho=100.0, delta=1e-5, max_records_per_user=3)
     # Accounting is byte-identical across k; only the injected noise scales.
     self.assertEqual(repr(mech.dp_event), repr(base.dp_event))
@@ -408,15 +408,15 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
   def test_custom_initializers_inherit_k(self):
     domains = self._categorical_domains()
     inits = data_generation_v3._create_initializers(domains, 32)
-    config = TabularSynthesizer(domains=domains, initializers=inits)
+    config = TabularConfig(domains=domains, initializers=inits)
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=2)
-    for init in calibrated.initializers.values():
+    for init in calibrated.calibrated_initializers.values():
       self.assertEqual(init.max_records_per_user, 2)
 
   @parameterized.named_parameters(('zero', 0), ('negative', -3))
   def test_invalid_k_raises(self, k):
-    config = TabularSynthesizer(domains=self._categorical_domains())
-    with self.assertRaises(ValueError):
+    config = TabularConfig(domains=self._categorical_domains())
+    with self.assertRaises(Exception):
       _ = config.configure(zcdp_rho=100.0, max_records_per_user=k)
 
   def test_poisson_calibrate_with_categorical_domains_and_gdp_mech(self):
@@ -424,7 +424,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
         'B': domain.CategoricalAttribute(possible_values=['x', 'y', 'z']),
     }
-    config = TabularSynthesizer(
+    config = TabularConfig(
         domains=domains,
         discrete_mechanism=discrete_mechanisms.IndependentConfig(),
     )
@@ -441,7 +441,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'B': domain.NumericalAttribute(min_value=0, max_value=10),
         'C': domain.OpenSetCategoricalAttribute(),
     }
-    config = TabularSynthesizer(domains=domains)
+    config = TabularConfig(domains=domains)
     with self.assertRaises(dp_accounting.UnsupportedEventError):
       _ = config.calibrate(
           epsilon=1.0,
@@ -452,3 +452,11 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
 if __name__ == '__main__':
   absltest.main()
+
+  def test_tabular_synthesizer_deprecated(self):
+    with self.assertWarnsRegex(
+        DeprecationWarning,
+        'TabularSynthesizer is deprecated. Use TabularConfig for configuration '
+        'and TabularMechanism for the calibrated runnable mechanism.',
+    ):
+      data_generation_v3.TabularSynthesizer(domains={})

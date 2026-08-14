@@ -17,7 +17,7 @@
 .. warning:: This module is experimental.
 
 This module provides a lightweight bridge between the local-mode
-TabularSynthesizer and Apache Beam, enabling local-mode features to
+TabularConfig and Apache Beam, enabling local-mode features to
 run on datasets too large to fit in memory. See the adapters README
 for more information.
 """
@@ -377,7 +377,7 @@ def _read(path: str) -> Any:
 
 
 def generate_from_marginals(
-    synth: data_generation_v3.TabularSynthesizer,
+    synth: data_generation_v3.TabularMechanism,
     rng: np.random.Generator,
     column_measurements: dict[str, initialization.ColumnMeasurement],
     marginals: mbi.CliqueVector,
@@ -386,7 +386,7 @@ def generate_from_marginals(
   """Runs the discrete mechanism and decoding from pre-computed marginals.
 
   Args:
-    synth: A calibrated TabularSynthesizer.
+    synth: A calibrated TabularMechanism.
     rng: NumPy random generator for the discrete mechanism's DP noise.
     column_measurements: Per-column results from pass 1 initialization.
     marginals: The exact joint marginals computed by pass 2.
@@ -405,7 +405,7 @@ def generate_from_marginals(
   mbi_constraints = tuple(c.to_mbi() for c in synth.cross_attribute_constraints)
   logging.info('[DPSynth/Beam]: Running discrete mechanism.')
   # pyrefly: ignore[missing-attribute,not-callable]
-  mechanism_result = synth.discrete_mechanism(
+  mechanism_result = synth.calibrated_discrete_mechanism(
       rng,
       data=marginals,
       initial_measurements=initial_measurements,
@@ -422,19 +422,17 @@ def generate_from_marginals(
 
 
 def _run_two_pass(
-    synth: data_generation_v3.TabularSynthesizer,
+    synth: data_generation_v3.TabularMechanism,
     rng: np.random.Generator,
     create_rows_fn: Callable[[beam.Pipeline], beam.PCollection],
     *,
     temp_location: str | None = None,
     pipeline_kwargs: dict[str, Any] | None = None,
 ) -> data_generation_v3.DataGenerationResult:
-  """Two-pass Beam pipeline that delegates to a local TabularSynthesizer."""
+  """Two-pass Beam pipeline that delegates to a local TabularConfig."""
 
   sigma = synth.total_count_sigma
-  if synth.initializers is None or sigma is None:
-    raise ValueError('TabularSynthesizer must be calibrated.')
-  inits = cast(dict[str, CalibratedInitializer], synth.initializers)
+  inits = cast(dict[str, CalibratedInitializer], synth.calibrated_initializers)
   init_configs = {name: c.config for name, c in inits.items()}
   if pipeline_kwargs is None:
     pipeline_kwargs = {}
@@ -475,7 +473,9 @@ def _run_two_pass(
         column_measurements, synth.domains
     ).mbi_domain
     # pyrefly: ignore[missing-attribute]
-    workload = synth.discrete_mechanism.supporting_cliques(mbi_domain)
+    workload = synth.calibrated_discrete_mechanism.supporting_cliques(
+        mbi_domain
+    )
 
     # Pass 2: compute the marginal workload.
     with beam.Pipeline(**pipeline_kwargs) as p:
@@ -502,28 +502,43 @@ def _run_two_pass(
 
 
 @dataclasses.dataclass
-class BeamTabularSynthesizer(api.DPMechanism):
-  """Beam-backed DPMechanism with the TabularSynthesizer calibrate->run API.
+class BeamTabularMechanism(api.CalibratedMechanism):
+  """Beam-backed DPMechanism with the TabularMechanism calibrate->run API."""
 
-  Subclasses :class:`DPMechanism` so it inherits ``calibrate`` for free, but
-  delegates the actual privacy work to a *composed* :class:`TabularSynthesizer`:
-  ``configure`` and ``dp_event`` forward verbatim to the wrapped synthesizer, so
-  the distributed path consumes exactly the same privacy budget as the in-memory
-  path. Only execution differs: per-column initialization and the marginal
-  workload run over an Apache Beam pipeline, while the discrete mechanism and
-  decoding run on the driver. Composing (rather than subclassing) the
-  synthesizer keeps the core, NumPy/pandas-only synthesizer free of any Beam
-  dependency.
+  synthesizer: data_generation_v3.TabularMechanism
+  temp_location: str | None = None
+  pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
+
+  @property
+  def dp_event(self) -> dp_accounting.DpEvent:
+    return self.synthesizer.dp_event
+
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      create_rows_fn: Callable[[beam.Pipeline], beam.PCollection],
+  ) -> data_generation_v3.DataGenerationResult:
+    return _run_two_pass(
+        self.synthesizer,
+        rng,
+        create_rows_fn,
+        temp_location=self.temp_location,
+        pipeline_kwargs={'options': self.pipeline_options},
+    )
+
+
+@dataclasses.dataclass
+class BeamTabularConfig(api.MechanismConfig):
+  """Beam-backed DPMechanism with the TabularConfig calibrate->run API.
 
   Usage::
 
-      synth = data_generation_v3.TabularSynthesizer(domains=domains)
-      beam_synth = BeamTabularSynthesizer(synth).configure(zcdp_rho=1.0)
+      config = data_generation_v3.TabularConfig(domains=domains)
+      beam_synth = BeamTabularConfig(config).configure(zcdp_rho=1.0)
       result = beam_synth(rng, create_rows_fn)
-      synthetic_df = result.synthetic_data
 
   Attributes:
-    synthesizer: The wrapped local-mode TabularSynthesizer. Supplies the domain,
+    synthesizer: The wrapped local-mode TabularConfig. Supplies the domain,
       sub-mechanisms, constraints, and privacy calibration.
     temp_location: Directory used to shuttle small singleton results between the
       pipeline and the driver. Must be readable and writable by all workers --
@@ -532,44 +547,21 @@ class BeamTabularSynthesizer(api.DPMechanism):
     pipeline_options: Optional Beam pipeline options applied to both passes.
   """
 
-  synthesizer: data_generation_v3.TabularSynthesizer
+  synthesizer: data_generation_v3.TabularConfig
   temp_location: str | None = None
   pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
 
-  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(
+      self, *, zcdp_rho, delta=0, max_records_per_user=1
+  ) -> BeamTabularMechanism:
     """Returns a copy whose synthesizer is configured with the given budget."""
-    synthesizer = self.synthesizer.configure(zcdp_rho=zcdp_rho, delta=delta)
-    return dataclasses.replace(self, synthesizer=synthesizer)
-
-  @property
-  def dp_event(self) -> dp_accounting.DpEvent:
-    """The composed DpEvent of the wrapped synthesizer."""
-    return self.synthesizer.dp_event
-
-  def __call__(
-      self,
-      rng: np.random.Generator,
-      create_rows_fn: Callable[[beam.Pipeline], beam.PCollection],
-  ) -> data_generation_v3.DataGenerationResult:
-    """Generates DP synthetic data by running the two-pass Beam pipeline.
-
-    Args:
-      rng: NumPy random generator.
-      create_rows_fn: A callable that takes a ``beam.Pipeline`` and returns a
-        ``PCollection[Row]``. This is a factory rather than a plain
-        ``PCollection`` because synthesis runs as two separate Beam pipelines
-        (pass 2's marginal workload depends on the domain discovered in pass 1),
-        and a ``PCollection`` is bound to the single pipeline it was built in.
-        The factory lets the source be re-attached to each pipeline; it is
-        called once per pass, so it must be safe to read the source twice.
-
-    Returns:
-      A DataGenerationResult containing the synthetic DataFrame.
-    """
-    return _run_two_pass(
-        self.synthesizer,
-        rng,
-        create_rows_fn,
+    synthesizer = self.synthesizer.configure(
+        zcdp_rho=zcdp_rho,
+        delta=delta,
+        max_records_per_user=max_records_per_user,
+    )
+    return BeamTabularMechanism(
+        synthesizer=synthesizer,
         temp_location=self.temp_location,
-        pipeline_kwargs={'options': self.pipeline_options},
+        pipeline_options=self.pipeline_options,
     )

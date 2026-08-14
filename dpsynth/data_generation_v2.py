@@ -53,7 +53,7 @@ def generate(
   del skip_compression  # Not supported by TabularSynthesizer.
   synth = TabularSynthesizer(
       domains=domains,
-      discrete_mechanism=discrete_config,
+      discrete_mechanism=discrete_config,  # pyrefly: ignore[bad-argument-type]
       cross_attribute_constraints=cross_attribute_constraints,
       numerical_bins=numerical_bins,
       init_budget_fraction=one_way_marginal_budget_fraction,
