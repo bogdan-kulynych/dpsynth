@@ -346,6 +346,22 @@ class DataGenerationV3Test(parameterized.TestCase):
     )
     self.assertLess(mechanism_error, 0.05 * baseline_error)
 
+  def test_empty_dataset(self):
+    """Tests that DPSynth works without crashing on empty datasets, and outputs noisy rows."""
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
+        'B': domain.NumericalAttribute(min_value=0, max_value=10),
+    }
+    df = pd.DataFrame(columns=['A', 'B'])
+    rng = np.random.default_rng(0)
+    calibrated = TabularSynthesizer(domains=domains).configure(zcdp_rho=100.0)
+    result = calibrated(rng, df)
+
+    self.assertIsInstance(result.synthetic_data, pd.DataFrame)
+    self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
+    # The true count is 0, but DPSynth always outputs at least one row.
+    self.assertLen(result.synthetic_data, 1)
+
 
 class MaxRecordsPerUserTest(parameterized.TestCase):
   """Tests the experimental user-level DP knob end to end."""
