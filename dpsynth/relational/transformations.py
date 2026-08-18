@@ -25,31 +25,224 @@ import numpy as np
 import pandas as pd
 
 
-def compute_hierarchical_weights(
+def _compute_row_root_mappings(
     tables: Mapping[str, pd.DataFrame],
-    foreign_keys: Sequence[rel_domain.ForeignKeyRelation],
-) -> dict[str, np.ndarray]:
-  """Computes standalone sensitivity weights (w = 1/k_eff) for Phase 1 initializers.
+    hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
+    rng: np.random.Generator | None = None,
+) -> dict[str, pd.Series]:
+  """Maps each row in every table to its root parent row index (0..N-1) or None.
 
-  Cascades group capacity truncation down the foreign key hierarchy and assigns
-  weights to each table such that the sum of weights associated with every root
-  household record equals 1.0 (unit sensitivity Delta = 1.0).
+  Traverses the relational hierarchy top-down. For each child table, maps
+  foreign key references to parent row positions and checks capacity limits.
+  When a parent record exceeds its `max_children_per_parent` bound (s), exactly
+  `s` children are selected uniformly at random without replacement.
+  Truncated, orphaned, or descendant records under dropped parents map to None.
+
+  Formal Guarantees:
+    - Bounded Lineage: For each root entity H_i and relation with bound s_k, at
+      most s_k children per parent (and at most prod_{j=1}^k s_j descendants at
+      depth k) retain active root mappings to H_i.
+    - Cascading Truncation Invariant: If an ancestor evaluates to None, all of
+      its transitive descendant records in downstream tables evaluate to None.
+    - Order-Agnostic Truncation: Child subsampling is uniform without
+      replacement, preventing privacy leakage from input DataFrame row order.
+    - Data-Dependent Error Immunity: Orphan foreign keys, duplicate primary
+      keys, and NaNs evaluate to None without runtime errors.
+    - Positional Alignment via None Preservation: Evaluates truncated, orphaned,
+      or invalid records to None rather than deleting them, preserving strict
+      1-to-1 positional alignment with input DataFrames. This avoids mutating
+      table shapes, prevents index-shifting artifacts during downstream
+      parent-to-child lookups, and cleanly maps to weight w_r = 0.0 in
+      sensitivity weighting.
+    - Downstream Ingestion: Zero-weighted records are stripped in the
+      synthesizer (via `weights > 0.0`) before entering column initializers
+      for bin discovery, encoding, and domain compression.
+
+  Example:
+    households: [H0, H1]
+    persons (s1=2): [P0(H0), P1(H0), P2(H0), P3(H1)] -> P2 truncated (None)
+    activities (s2=2): [A0(P0), A1(P1), A2(P2), A3(P3), A4(orphan)]
+      -> A0 maps to 0
+      -> A1 maps to 0
+      -> A2 maps to None (parent P2 was truncated)
+      -> A3 maps to 1
+      -> A4 maps to None (orphan foreign key)
+
+    Result:
+      {
+        'households': pd.Series([0, 1]),
+        'persons':    pd.Series([0, 0, None, 1]),
+        'activities': pd.Series([0, 0, None, 1, None]),
+      }
 
   Args:
     tables: Mapping from table name to input DataFrame.
-    foreign_keys: Sequence of foreign key relationships between tables.
+    hierarchy: Ordered topological synthesis levels from
+      `topological_sort_hierarchy()`.
+    rng: Random number generator for uniform child record truncation.
 
   Returns:
-    A dictionary mapping table name to a 1D float array of row weights.
+    A dictionary mapping table name to a pd.Series of root row indices (int) or
+    None, aligned 1-to-1 with DataFrame rows.
 
   Raises:
-    ValueError: If foreign key relationships contain invalid table/column
-    references.
+    ValueError: If required primary or foreign key columns are missing from
+      schemas.
   """
-  del tables, foreign_keys
-  raise NotImplementedError(
-      'compute_hierarchical_weights is not yet implemented.'
-  )
+  if rng is None:
+    rng = np.random.default_rng()
+
+  row_to_root: dict[str, pd.Series] = {}
+  for depth, table_name, fk in hierarchy:
+    child_df = tables[table_name]
+
+    # Depth 0: Root privacy unit table (no incoming foreign key).
+    # Each root record maps to its own 0-based integer row index.
+    if depth == 0 or fk is None:
+      row_to_root[table_name] = pd.Series(
+          range(len(child_df)),
+          index=child_df.index,
+          dtype=object,
+      )
+      continue
+
+    # Schema integrity validation (public schema check; safe to raise errors).
+    if fk.parent_primary_key not in tables[fk.parent_table].columns:
+      raise ValueError(
+          f'Parent primary key column {fk.parent_primary_key!r} not in table'
+          f' {fk.parent_table!r}.'
+      )
+    if fk.child_foreign_key not in child_df.columns:
+      raise ValueError(
+          f'Child foreign key column {fk.child_foreign_key!r} not in table'
+          f' {table_name!r}.'
+      )
+
+    parent_df = tables[fk.parent_table]
+    parent_roots = row_to_root[fk.parent_table]
+
+    # Fast path for empty tables: returns all None without failing.
+    if child_df.empty or parent_df.empty:
+      row_to_root[table_name] = pd.Series(
+          [None] * len(child_df), index=child_df.index, dtype=object
+      )
+      continue
+
+    # 1. Parent lookup maps parent primary keys to row numbers in parent_df.
+    # Ignores NaN primary keys and deduplicates repeated keys (keeping first).
+    # parent_lookup: (Index = parent_pk, Value = parent_df row index).
+    parent_pos = pd.Series(range(len(parent_df)), index=parent_df.index)
+    parent_valid_mask = (
+        parent_df[fk.parent_primary_key].notna()  # No NaN keys.
+        & ~parent_df[fk.parent_primary_key].duplicated()  # Keep only first.
+    )
+    parent_keys = parent_df.loc[parent_valid_mask, fk.parent_primary_key]
+    parent_lookup = pd.Series(
+        parent_pos.loc[parent_valid_mask].values, index=parent_keys
+    )
+
+    # 2. Vectorized translation of child foreign keys to parent_df row indices.
+    # Non-matching keys (orphans) and NaNs evaluate to NaN.
+    # child_p_idx : (Index = child row, Value = parent row | NaN).
+    child_p_idx = child_df[fk.child_foreign_key].map(parent_lookup)
+
+    # 3. Discard unlinked children
+    # valid_children: (Index = child row, Value = parent row).
+    valid_children = child_p_idx.dropna().astype(int)
+    if valid_children.empty:
+      row_to_root[table_name] = pd.Series(
+          [None] * len(child_df), index=child_df.index, dtype=object
+      )
+      continue
+
+    # 4. Enforce cascading truncation: drop children whose parent root is None.
+    # Map valid parent indices back to parent_roots positions
+    parent_active_mask = parent_roots.notna().iloc[valid_children.values].values
+    valid_children = valid_children[parent_active_mask]
+    if valid_children.empty:
+      row_to_root[table_name] = pd.Series(
+          [None] * len(child_df), index=child_df.index, dtype=object
+      )
+      continue
+
+    # 5. Intra-group uniform random ranking via Pandas, for uniform truncation.
+    # Assigns random float to each child; ranks within each parent group.
+    # random_scores: (Index = child row, Value = random float).
+    # group_ranks: (Index = child row, Value = rank 1-to-n within parent group).
+    random_scores = pd.Series(
+        rng.random(len(valid_children)), index=valid_children.index
+    )
+    group_ranks = random_scores.groupby(valid_children.values).rank(
+        method='first'
+    )
+    selected_children = valid_children[
+        group_ranks <= fk.max_children_per_parent
+    ]
+
+    # 6. Assign root lineages to selected children in Pandas.
+    # Initialize full child table to None; update only selected active rows.
+    child_roots_series = pd.Series(
+        [None] * len(child_df), index=child_df.index, dtype=object
+    )
+    child_roots_series.loc[selected_children.index] = parent_roots.iloc[
+        selected_children.values
+    ].values
+
+    row_to_root[table_name] = child_roots_series
+  return row_to_root
+
+
+def compute_hierarchical_weights(
+    tables: Mapping[str, pd.DataFrame],
+    hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
+    rng: np.random.Generator | None = None,
+) -> dict[str, np.ndarray]:
+  """Computes standalone sensitivity weights (w = 1/k_eff) for Phase 1 initializers.
+
+  Calculates a 1D weight array for each table such that the sum of weights
+  associated with any single root entity (e.g. household) equals 1.0, ensuring
+  global unit sensitivity (Delta = 1.0) without Cartesian joins or noise
+  scaling.
+
+  For each table, active records belonging to a root with k_eff active rows
+  receive weight 1.0 / k_eff. Inactive rows (truncated or orphaned) receive 0.0.
+
+  Formal Guarantees:
+    - Unit Sensitivity (Delta = 1.0): For every table T and every root entity
+      H_i, sum_{r in H_i} w_r <= 1.0, guaranteeing global ell_1-sensitivity
+      Delta = 1.0 for weighted linear queries on T without Cartesian joins.
+    - Equal Intra-Group Weighting: Each active record under root H_i with k_eff
+      active rows receives identical weight w_r = 1.0 / k_eff.
+    - Zero Inactive Weight: All truncated, orphaned, or unlinked records are
+      assigned weight exactly w_r = 0.0.
+    - Downstream Ingestion: Zero-weighted records (w_r = 0.0) are stripped at
+      the synthesizer boundary (via `weights > 0.0`) before entering column
+      initializers, bin discovery, discrete encoding, and domain compression.
+
+  Args:
+    tables: Mapping from table name to input DataFrame.
+    hierarchy: Ordered topological synthesis levels from
+      `topological_sort_hierarchy()`.
+    rng: Random number generator for child record truncation.
+
+  Returns:
+    A dictionary mapping table name to a 1D float64 array of row weights.
+  """
+  row_to_root = _compute_row_root_mappings(tables, hierarchy, rng=rng)
+
+  weights: dict[str, np.ndarray] = {}
+  for depth, table_name, _ in hierarchy:
+    if depth == 0:
+      weights[table_name] = np.ones(len(tables[table_name]), dtype=np.float64)
+    else:
+      roots = row_to_root[table_name]
+      root_counts = roots.value_counts()
+      table_weights = (
+          roots.map(1.0 / root_counts).fillna(0.0).to_numpy(dtype=np.float64)
+      )
+      weights[table_name] = table_weights
+
+  return weights
 
 
 def build_permuted_exploration_dataset(
