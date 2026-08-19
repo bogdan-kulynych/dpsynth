@@ -246,7 +246,7 @@ def compute_hierarchical_weights(
   return weights
 
 
-def _build_exploration_domain(
+def build_exploration_domain(
     parent_domain: mbi.Domain,
     child_domain: mbi.Domain,
     max_group_size: int,
@@ -358,7 +358,7 @@ def build_permuted_exploration_dataset(
         identical marginal distributions across all child slots (P(Slot_i) ==
         P(Slot_j)), preventing slot bias during candidate query selection.
 
-    - Inherited from `_build_exploration_domain`:
+    - Inherited from `build_exploration_domain`:
       - No Private Metadata Leakage: Exploration domain dimensions are fixed
         strictly by public metadata. No leaking private parent group sizes.
 
@@ -431,7 +431,7 @@ def build_permuted_exploration_dataset(
     child_ranks = np.empty(0, dtype=int)
 
   # Construct exploration domain fixed strictly by public max_group_size.
-  exploration_domain = _build_exploration_domain(
+  exploration_domain = build_exploration_domain(
       parent_domain=parent_dataset.domain,
       child_domain=child_dataset.domain,
       max_group_size=max_group_size,

@@ -462,7 +462,7 @@ def unstack_wide_family_records(
     active_mask = slot_idx <= group_sizes
 
     # Under 'empty_token' mode, filter out slots with <EMPTY> (val == K_attr).
-    # <EMPTY> encoded as k_attr in _build_exploration_domain
+    # <EMPTY> encoded as k_attr in build_exploration_domain
     for attr in child_attrs:
       col_name = f'slot_{slot_idx}.{attr}'
       vals = synth_wide_dataset.data[col_name]

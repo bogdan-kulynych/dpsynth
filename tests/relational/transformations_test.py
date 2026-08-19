@@ -29,7 +29,7 @@ class TransformationsTest(absltest.TestCase):
     parent_domain = mbi.Domain.fromdict({'income': 4, 'region': 3})
     child_domain = mbi.Domain.fromdict({'age': 10, 'gender': 2})
     # s = 3, o = 2
-    domain = transformations._build_exploration_domain(
+    domain = transformations.build_exploration_domain(
         parent_domain=parent_domain,
         child_domain=child_domain,
         max_group_size=3,
@@ -52,7 +52,7 @@ class TransformationsTest(absltest.TestCase):
   def test_build_exploration_domain_size_sliced(self):
     parent_domain = mbi.Domain.fromdict({'income': 4})
     child_domain = mbi.Domain.fromdict({'age': 10})
-    domain = transformations._build_exploration_domain(
+    domain = transformations.build_exploration_domain(
         parent_domain=parent_domain,
         child_domain=child_domain,
         max_group_size=2,
@@ -510,7 +510,7 @@ class TransformationsFormalGuaranteesPropertyTest(absltest.TestCase):
       child_dom = mbi.Domain(child_attrs, child_shapes)
 
       # Strategy A: empty_token (+1 to child attributes)
-      dom_a = transformations._build_exploration_domain(
+      dom_a = transformations.build_exploration_domain(
           parent_dom,
           child_dom,
           max_group_size=s,
@@ -524,7 +524,7 @@ class TransformationsFormalGuaranteesPropertyTest(absltest.TestCase):
       self.assertEqual(dom_a.attributes[len(parent_attrs)], 'group_size')
 
       # Strategy B: size_sliced (unextended child attributes)
-      dom_b = transformations._build_exploration_domain(
+      dom_b = transformations.build_exploration_domain(
           parent_dom,
           child_dom,
           max_group_size=s,

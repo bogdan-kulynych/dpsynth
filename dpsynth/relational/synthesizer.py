@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Hashable, Mapping, Sequence
 import dataclasses
 import math
 from typing import Any, Literal
@@ -32,6 +32,7 @@ from dpsynth.local_mode import initialization
 from dpsynth.local_mode import primitives
 from dpsynth.local_mode import vectorized_transformations as vtx
 from dpsynth.relational import domain as rel_domain
+from dpsynth.relational import post_processing
 from dpsynth.relational import transformations
 import mbi
 import numpy as np
@@ -537,6 +538,277 @@ def _compute_link_sensitivities(
       )
 
   return link_sensitivities
+
+
+def _fit_and_sample_wide_link_mrf(
+    wide_domain: mbi.Domain,
+    wide_measurements: Sequence[mbi.LinearMeasurement],
+    wide_constraints: Sequence[mbi.Constraint],
+    num_rows: int,
+    iters: int = 5000,
+) -> mbi.Dataset:
+  """Fits an MRF on the wide generation domain and samples num_rows wide records.
+
+  Args:
+    wide_domain: Generation mbi.Domain with s child slots.
+    wide_measurements: Symmetrized noisy linear measurements.
+    wide_constraints: Monolithic linear-chain constraints on child slots.
+    num_rows: Number of wide family records to sample (>= 0).
+    iters: Number of Mirror Descent iterations for PGM estimation.
+
+  Returns:
+    An mbi.Dataset containing num_rows sampled wide family records.
+  """
+  if num_rows <= 0:
+    return mbi.Dataset.synthetic(wide_domain, 0)
+
+  estimator = mbi.estimation.MirrorDescent()
+  measurements_list = list(wide_measurements)
+  callback_fn = mbi.callbacks.default(measurements_list, wide_domain)
+  model = estimator.estimate(
+      wide_domain,
+      measurements_list,
+      iters=iters,
+      callback_fn=callback_fn,
+      constraints=list(wide_constraints),
+  )
+  return model.synthetic_data(rows=num_rows)
+
+
+@dataclasses.dataclass(frozen=True)
+class SynthesizedLinkResult:
+  """Results from synthesizing a single relational parent-child link.
+
+  Attributes:
+    unstacked_child_dataset: Unstacked active child records in child domain.
+    parent_row_indices: 1D int array mapping each unstacked child record to its
+      parent row index in the parent table.
+    synth_parent_dataset: Synthesized parent dataset (extracted only for root
+      table on Level 1; None for downstream links).
+    discrete_mechanism_result: Optional result from the discrete mechanism.
+  """
+
+  unstacked_child_dataset: mbi.Dataset
+  parent_row_indices: np.ndarray
+  synth_parent_dataset: mbi.Dataset | None = None  # Needed for the root table.
+  discrete_mechanism_result: dm_common.DiscreteMechanismResult | None = None
+
+
+def _synthesize_relational_link(
+    parent_dataset: mbi.Dataset,
+    child_dataset: mbi.Dataset,
+    parent_primary_keys: Sequence[Hashable],
+    child_foreign_keys: Sequence[Hashable],
+    fk_relation: rel_domain.ForeignKeyRelation,
+    discrete_mechanism: api.CalibratedMechanism,
+    num_permutation_slots: int,
+    strategy: Literal['empty_token', 'size_sliced'],
+    rng: np.random.Generator,
+    synth_parents: mbi.Dataset | None = None,
+    noisy_root_total: float = 1.0,
+) -> SynthesizedLinkResult:
+  """Synthesizes a single parent-to-child relational link down the hierarchy.
+
+  Formal Guarantees:
+    - Private Exploration on Real Data: Constructs permuted exploration table
+      directly from the private parent and child tables with bounded capacity
+      s = max_children_per_parent. The calibrated discrete mechanism measures
+      queries under cascading link sensitivity Delta_k = prod_{i=1}^{k-1} s_i,
+      using o-slot linear-chain constraints to avoid wasting privacy budget on
+      invalid/mixed states.
+
+  Post-Processing Guarantees:
+    - Noisy exploration measurements are symmetrized across all s generation
+      slots via data-independent linear combinations, and Private-PGM Mirror
+      Descent is fitted on them with deterministic s-slot constraints
+
+    - Downstream Linking on Synthetic Parents: Downstream child records are
+      coupled to the upstream synthesized parent records (synth_parents) via
+      Copula Quantile Matching (within-bin random tie-breaking and
+      lexicographical sorting). This achieves exact 1-to-1 family coupling
+      (N = |synth_parents|) and 0% orphan records without accessing private
+      parent records during the generation/linking phase.
+
+  Args:
+    parent_dataset: Sensitive preprocessed parent table mbi.Dataset.
+    child_dataset: Sensitive preprocessed child table mbi.Dataset.
+    parent_primary_keys: Sequence of parent primary key identifiers.
+    child_foreign_keys: Sequence of child foreign key references.
+    fk_relation: ForeignKeyRelation specifying capacity bound s.
+    discrete_mechanism: Calibrated discrete mechanism for this link.
+    num_permutation_slots: Permutation exploration slot count (o).
+    strategy: Exploration strategy ('empty_token' or 'size_sliced').
+    rng: NumPy random generator.
+    synth_parents: Optional upstream synthesized parent dataset to couple with.
+      If None (e.g. root table at Level 1), row count is anchored by
+      noisy_root_total.
+    noisy_root_total: Noisy root parent total count (for Level 1 root anchors).
+
+  Returns:
+    A SynthesizedLinkResult containing unstacked child dataset, parent row index
+    mapping, extracted root parent dataset (if Level 1), and diagnostics.
+  """
+  exploration_dataset = transformations.build_permuted_exploration_dataset(
+      parent_dataset=parent_dataset,
+      child_dataset=child_dataset,
+      parent_primary_keys=parent_primary_keys,
+      child_foreign_keys=child_foreign_keys,
+      max_group_size=fk_relation.max_children_per_parent,
+      num_permutation_slots=num_permutation_slots,
+      strategy=strategy,
+  )
+
+  if strategy == 'empty_token':
+    exploration_constraints = (
+        post_processing.create_slot_linear_chain_constraints(
+            child_domain=child_dataset.domain,
+            num_permutation_slots=num_permutation_slots,
+        )
+    )
+  else:
+    exploration_constraints = ()
+
+  mech_res: dm_common.DiscreteMechanismResult = discrete_mechanism(
+      rng=rng,
+      data=exploration_dataset,
+      constraints=exploration_constraints,
+  )
+  assert hasattr(mech_res, 'measurements')
+
+  wide_measurements = post_processing.symmetrize_to_wide_domain(
+      measurements=mech_res.measurements,
+      max_children_per_parent=fk_relation.max_children_per_parent,
+      num_permutation_slots=num_permutation_slots,
+  )
+
+  wide_domain = transformations.build_exploration_domain(
+      parent_domain=parent_dataset.domain,
+      child_domain=child_dataset.domain,
+      max_group_size=fk_relation.max_children_per_parent,
+      num_permutation_slots=fk_relation.max_children_per_parent,
+      strategy=strategy,
+  )
+
+  if strategy == 'empty_token':
+    wide_constraints = post_processing.create_slot_linear_chain_constraints(
+        child_domain=child_dataset.domain,
+        num_permutation_slots=fk_relation.max_children_per_parent,
+    )
+  else:
+    wide_constraints = ()
+
+  num_rows = (
+      synth_parents.records
+      if synth_parents is not None
+      else max(1, int(round(noisy_root_total)))
+  )
+
+  synth_wide_records = _fit_and_sample_wide_link_mrf(
+      wide_domain=wide_domain,
+      wide_measurements=wide_measurements,
+      wide_constraints=wide_constraints,
+      num_rows=num_rows,
+  )
+
+  synth_parent_dataset: mbi.Dataset | None = None
+  if synth_parents is None:
+    # Depth=0 Root Table ONLY: extract root parent dataset from wide records
+    parent_cols = list(parent_dataset.domain.attributes)
+    root_data = {col: synth_wide_records.data[col] for col in parent_cols}
+    synth_parent_dataset = mbi.Dataset(root_data, parent_dataset.domain)
+  else:
+    synth_wide_records = post_processing.quantile_copula_coupling(
+        synth_parents=synth_parents,
+        synth_wide_children=synth_wide_records,
+        parent_columns=[str(col) for col in parent_dataset.domain.attributes],
+        rng=rng,
+    )
+
+  unstacked_children, parent_row_indices = (
+      post_processing.unstack_wide_family_records(
+          synth_wide_dataset=synth_wide_records,
+          child_domain=child_dataset.domain,
+          max_children_per_parent=fk_relation.max_children_per_parent,
+      )
+  )
+
+  return SynthesizedLinkResult(
+      unstacked_child_dataset=unstacked_children,
+      parent_row_indices=parent_row_indices,
+      synth_parent_dataset=synth_parent_dataset,
+      discrete_mechanism_result=mech_res,
+  )
+
+
+def _synthesize_relational_hierarchy(
+    mechanism: MultiTableMechanism,
+    preprocessed: PreprocessedTables,
+    hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
+    rng: np.random.Generator,
+) -> tuple[
+    dict[str, mbi.Dataset],
+    dict[str, np.ndarray],
+    dict[str, Any],
+]:
+  """Synthesizes all tables in topological order across the relational DAG.
+
+  Args:
+    mechanism: Calibrated MultiTableMechanism.
+    preprocessed: PreprocessedTables container from Phase 1.
+    hierarchy: Ordered topological synthesis levels.
+    rng: NumPy random generator.
+
+  Returns:
+    A tuple of (synth_datasets, parent_mappings, discrete_mechanism_results):
+      - synth_datasets: Mapping from table name to synthesized compressed
+        mbi.Dataset.
+      - parent_mappings: Mapping from child table name to 1D int array of parent
+        row indices.
+      - discrete_mechanism_results: Mapping from link name to mechanism
+        diagnostics.
+  """
+  synth_datasets: dict[str, mbi.Dataset] = {}
+  parent_mappings: dict[str, np.ndarray] = {}
+  discrete_mechanism_results: dict[str, Any] = {}
+
+  for _, table_name, fk in hierarchy:
+    if fk is None:
+      continue
+
+    link_name = f'{fk.parent_table}->{fk.child_table}'
+    discrete_mech = mechanism.calibrated_discrete_mechanisms[link_name]
+    parent_dataset = preprocessed.compressed_datasets[fk.parent_table]
+    child_dataset = preprocessed.compressed_datasets[table_name]
+    parent_pks = list(
+        preprocessed.table_keys[fk.parent_table][fk.parent_primary_key]
+    )
+    child_fks = list(preprocessed.table_keys[table_name][fk.child_foreign_key])
+
+    synth_parents = synth_datasets.get(fk.parent_table)
+    link_res = _synthesize_relational_link(
+        parent_dataset=parent_dataset,
+        child_dataset=child_dataset,
+        parent_primary_keys=parent_pks,
+        child_foreign_keys=child_fks,
+        fk_relation=fk,
+        discrete_mechanism=discrete_mech,
+        num_permutation_slots=mechanism.num_permutation_slots,
+        strategy=mechanism.exploration_strategy,
+        rng=rng,
+        synth_parents=synth_parents,
+        noisy_root_total=preprocessed.noisy_root_total,
+    )
+
+    if fk.parent_table not in synth_datasets:
+      assert link_res.synth_parent_dataset is not None
+      synth_datasets[fk.parent_table] = link_res.synth_parent_dataset
+
+    synth_datasets[table_name] = link_res.unstacked_child_dataset
+    parent_mappings[table_name] = link_res.parent_row_indices
+    if link_res.discrete_mechanism_result is not None:
+      discrete_mechanism_results[link_name] = link_res.discrete_mechanism_result
+
+  return synth_datasets, parent_mappings, discrete_mechanism_results
 
 
 @dataclasses.dataclass(frozen=True)

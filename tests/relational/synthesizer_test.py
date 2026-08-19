@@ -22,7 +22,9 @@ from dpsynth import discrete_mechanisms
 from dpsynth import domain
 from dpsynth.local_mode import initialization
 from dpsynth.relational import domain as rel_domain
+from dpsynth.relational import post_processing
 from dpsynth.relational import synthesizer
+from dpsynth.relational import transformations
 import mbi
 import numpy as np
 import pandas as pd
@@ -855,6 +857,348 @@ class SynthesizerTest(absltest.TestCase):
     self.assertIn('Person', preprocessed.column_codecs)
     self.assertIn('Household', preprocessed.one_way_measurements)
     self.assertIn('Person', preprocessed.one_way_measurements)
+
+  def test_synthesized_link_result_dataclass(self):
+    parent_dom = mbi.Domain(('income',), (2,))
+    child_dom = mbi.Domain(('amt',), (2,))
+    parent_ds = mbi.Dataset({'income': np.array([0])}, parent_dom)
+    child_ds = mbi.Dataset({'amt': np.array([1])}, child_dom)
+    parent_idx = np.array([0], dtype=np.int64)
+
+    link_res = synthesizer.SynthesizedLinkResult(
+        unstacked_child_dataset=child_ds,
+        parent_row_indices=parent_idx,
+        synth_parent_dataset=parent_ds,
+    )
+
+    self.assertEqual(link_res.unstacked_child_dataset.records, 1)
+    self.assertIsNotNone(link_res.synth_parent_dataset)
+    self.assertEqual(link_res.synth_parent_dataset.records, 1)
+    np.testing.assert_array_equal(link_res.parent_row_indices, [0])
+    self.assertIsNone(link_res.discrete_mechanism_result)
+
+  def test_fit_and_sample_wide_link_mrf_zero_rows(self):
+    wide_domain = mbi.Domain(('income', 'slot_1.age'), (3, 4))
+    res = synthesizer._fit_and_sample_wide_link_mrf(
+        wide_domain=wide_domain,
+        wide_measurements=(),
+        wide_constraints=(),
+        num_rows=0,
+    )
+    self.assertEqual(res.records, 0)
+    self.assertEqual(res.domain.attributes, ('income', 'slot_1.age'))
+
+  def test_fit_and_sample_wide_link_mrf_with_constraints(self):
+    # Wide domain: 1 parent attribute, 1 slot with 2 attributes
+    #   (age [3 bins], gender [2 bins])
+    child_domain = mbi.Domain(('age', 'gender'), (3, 2))
+    parent_domain = mbi.Domain(('income',), (2,))
+    wide_domain = transformations.build_exploration_domain(
+        parent_domain=parent_domain,
+        child_domain=child_domain,
+        max_group_size=1,
+        num_permutation_slots=1,
+        strategy='empty_token',
+    )
+    # Constraints: monolithic locking on slot 1
+    constraints = post_processing.create_slot_linear_chain_constraints(
+        child_domain=child_domain,
+        num_permutation_slots=1,
+    )
+    # Measurements: 1-way for parent
+    # & child features + 2-way clique for constraints
+    measurements = [
+        mbi.LinearMeasurement(np.array([10.0, 10.0]), ('income',), stddev=1.0),
+        mbi.LinearMeasurement(
+            np.array([5.0, 5.0, 5.0, 5.0]), ('slot_1.age',), stddev=1.0
+        ),
+        mbi.LinearMeasurement(
+            np.array([8.0, 7.0, 5.0]), ('slot_1.gender',), stddev=1.0
+        ),
+        mbi.LinearMeasurement(
+            np.full(12, 2.0), ('slot_1.age', 'slot_1.gender'), stddev=1.0
+        ),
+    ]
+    sampled = synthesizer._fit_and_sample_wide_link_mrf(
+        wide_domain=wide_domain,
+        wide_measurements=measurements,
+        wide_constraints=constraints,
+        num_rows=20,
+        iters=20,
+    )
+    self.assertEqual(sampled.records, 20)
+    # Check that mixed states are never sampled: age==3 iff gender==2 (<EMPTY>)
+    ages = sampled.data['slot_1.age']
+    genders = sampled.data['slot_1.gender']
+    for a, g in zip(ages, genders):
+      if a == 3:
+        self.assertEqual(g, 2)
+      if g == 2:
+        self.assertEqual(a, 3)
+
+  def test_synthesize_relational_link_level_1(self):
+    rng = np.random.default_rng(42)
+    parent_dom = mbi.Domain(('income',), (2,))
+    child_dom = mbi.Domain(('age',), (3,))
+    parent_ds = mbi.Dataset({'income': np.array([0, 1] * 10)}, parent_dom)
+    child_ds = mbi.Dataset({'age': np.array([0, 1, 2, 0] * 10)}, child_dom)
+    parent_pks = [f'H{i}' for i in range(20)]
+    child_fks = [f'H{i // 2}' for i in range(40)]
+    fk = rel_domain.ForeignKeyRelation(
+        parent_table='Household',
+        parent_primary_key='hid',
+        child_table='Person',
+        child_foreign_key='hid',
+        max_children_per_parent=2,
+    )
+    discrete_mech = discrete_mechanisms.AIMConfig(
+        pgm_iters=10, max_rounds=2
+    ).configure(zcdp_rho=0.5)
+
+    res = synthesizer._synthesize_relational_link(
+        parent_dataset=parent_ds,
+        child_dataset=child_ds,
+        parent_primary_keys=parent_pks,
+        child_foreign_keys=child_fks,
+        fk_relation=fk,
+        discrete_mechanism=discrete_mech,
+        num_permutation_slots=2,
+        strategy='empty_token',
+        rng=rng,
+        synth_parents=None,
+        noisy_root_total=20.0,
+    )
+
+    self.assertIsInstance(res, synthesizer.SynthesizedLinkResult)
+    self.assertIsNotNone(res.synth_parent_dataset)
+    self.assertEqual(res.synth_parent_dataset.records, 20)
+    self.assertEqual(res.unstacked_child_dataset.domain.attributes, ('age',))
+    self.assertIsNotNone(res.discrete_mechanism_result)
+    self.assertGreaterEqual(len(res.parent_row_indices), 0)
+    if len(res.parent_row_indices) > 0:
+      self.assertTrue(np.all(res.parent_row_indices < 20))
+
+  def test_synthesize_relational_link_downstream_copula(self):
+    rng = np.random.default_rng(42)
+    parent_dom = mbi.Domain(('age',), (3,))
+    child_dom = mbi.Domain(('amt',), (2,))
+    parent_ds = mbi.Dataset({'age': np.array([0, 1, 2])}, parent_dom)
+    child_ds = mbi.Dataset({'amt': np.array([0, 1, 1])}, child_dom)
+    parent_pks = ['P1', 'P2', 'P3']
+    child_fks = ['P1', 'P2', 'P2']
+    fk = rel_domain.ForeignKeyRelation(
+        parent_table='Person',
+        parent_primary_key='pid',
+        child_table='Activity',
+        child_foreign_key='pid',
+        max_children_per_parent=2,
+    )
+    discrete_mech = discrete_mechanisms.AIMConfig(
+        pgm_iters=10, max_rounds=2
+    ).configure(zcdp_rho=0.5)
+
+    # Simulated synth_parents from Level 1
+    synth_parents = mbi.Dataset({'age': np.array([2, 0, 1])}, parent_dom)
+
+    res = synthesizer._synthesize_relational_link(
+        parent_dataset=parent_ds,
+        child_dataset=child_ds,
+        parent_primary_keys=parent_pks,
+        child_foreign_keys=child_fks,
+        fk_relation=fk,
+        discrete_mechanism=discrete_mech,
+        num_permutation_slots=2,
+        strategy='empty_token',
+        rng=rng,
+        synth_parents=synth_parents,
+    )
+
+    self.assertIsInstance(res, synthesizer.SynthesizedLinkResult)
+    self.assertIsNone(res.synth_parent_dataset)
+    self.assertEqual(res.unstacked_child_dataset.domain.attributes, ('amt',))
+    self.assertIsNotNone(res.discrete_mechanism_result)
+    self.assertTrue(np.all(res.parent_row_indices < 3))
+
+  def test_synthesize_relational_hierarchy_3_tier(self):
+    rng = np.random.default_rng(42)
+    data = {
+        'Household': pd.DataFrame(
+            {'hid': ['H1', 'H2'], 'income': [30.0, 80.0]}
+        ),
+        'Person': pd.DataFrame({
+            'pid': ['P1', 'P2', 'P3'],
+            'hid': ['H1', 'H1', 'H2'],
+            'age': [25, 30, 45],
+        }),
+        'Activity': pd.DataFrame({
+            'aid': ['A1', 'A2', 'A3', 'A4'],
+            'pid': ['P1', 'P2', 'P2', 'P3'],
+            'amt': [100.0, 200.0, 150.0, 300.0],
+        }),
+    }
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(0, 100),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(0, 100),
+        },
+        'Activity': {
+            'amt': domain.NumericalAttribute(0, 500),
+        },
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+        rel_domain.ForeignKeyRelation(
+            parent_table='Person',
+            parent_primary_key='pid',
+            child_table='Activity',
+            child_foreign_key='pid',
+            max_children_per_parent=2,
+        ),
+    ]
+    hierarchy = rel_domain.topological_sort_hierarchy(
+        tables=list(domains.keys()), foreign_keys=fks
+    )
+    cfg = synthesizer.MultiTableConfig(
+        domains=domains,
+        foreign_keys=fks,
+        discrete_mechanism=discrete_mechanisms.AIMConfig(
+            pgm_iters=10, max_rounds=2
+        ),
+        num_permutation_slots=2,
+    )
+    mech = cfg.configure(zcdp_rho=0.5, max_records_per_user=1)
+
+    preprocessed = synthesizer._run_table_preprocessing(
+        mechanism=mech,
+        rng=rng,
+        data=data,
+    )
+
+    synth_datasets, parent_mappings, discrete_results = (
+        synthesizer._synthesize_relational_hierarchy(
+            mechanism=mech,
+            preprocessed=preprocessed,
+            hierarchy=hierarchy,
+            rng=rng,
+        )
+    )
+
+    self.assertIn('Household', synth_datasets)
+    self.assertIn('Person', synth_datasets)
+    self.assertIn('Activity', synth_datasets)
+    self.assertGreater(synth_datasets['Household'].records, 0)
+    self.assertIn('Person', parent_mappings)
+    self.assertIn('Activity', parent_mappings)
+    if synth_datasets['Person'].records > 0:
+      self.assertTrue(
+          np.all(
+              parent_mappings['Person'] < synth_datasets['Household'].records
+          )
+      )
+    if synth_datasets['Activity'].records > 0:
+      self.assertTrue(
+          np.all(parent_mappings['Activity'] < synth_datasets['Person'].records)
+      )
+    self.assertIn('Household->Person', discrete_results)
+    self.assertIn('Person->Activity', discrete_results)
+
+  def test_synthesize_relational_hierarchy_branching(self):
+    rng = np.random.default_rng(42)
+    data = {
+        'Household': pd.DataFrame(
+            {'hid': ['H1', 'H2'], 'income': [30.0, 80.0]}
+        ),
+        'Person': pd.DataFrame({
+            'pid': ['P1', 'P2', 'P3'],
+            'hid': ['H1', 'H1', 'H2'],
+            'age': [25, 30, 45],
+        }),
+        'Vehicle': pd.DataFrame({
+            'vid': ['V1', 'V2'],
+            'hid': ['H1', 'H2'],
+            'type': ['sedan', 'suv'],
+        }),
+    }
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(0, 100),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(0, 100),
+        },
+        'Vehicle': {
+            'type': domain.CategoricalAttribute(['sedan', 'suv']),
+        },
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Vehicle',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+    ]
+    hierarchy = rel_domain.topological_sort_hierarchy(
+        tables=list(domains.keys()), foreign_keys=fks
+    )
+    cfg = synthesizer.MultiTableConfig(
+        domains=domains,
+        foreign_keys=fks,
+        discrete_mechanism=discrete_mechanisms.AIMConfig(
+            pgm_iters=10, max_rounds=2
+        ),
+        num_permutation_slots=2,
+    )
+    mech = cfg.configure(zcdp_rho=0.5, max_records_per_user=1)
+
+    preprocessed = synthesizer._run_table_preprocessing(
+        mechanism=mech,
+        rng=rng,
+        data=data,
+    )
+
+    synth_datasets, parent_mappings, discrete_results = (
+        synthesizer._synthesize_relational_hierarchy(
+            mechanism=mech,
+            preprocessed=preprocessed,
+            hierarchy=hierarchy,
+            rng=rng,
+        )
+    )
+
+    self.assertIn('Household', synth_datasets)
+    self.assertIn('Person', synth_datasets)
+    self.assertIn('Vehicle', synth_datasets)
+    if synth_datasets['Person'].records > 0:
+      self.assertTrue(
+          np.all(
+              parent_mappings['Person'] < synth_datasets['Household'].records
+          )
+      )
+    if synth_datasets['Vehicle'].records > 0:
+      self.assertTrue(
+          np.all(
+              parent_mappings['Vehicle'] < synth_datasets['Household'].records
+          )
+      )
+    self.assertIn('Household->Person', discrete_results)
+    self.assertIn('Household->Vehicle', discrete_results)
 
 
 if __name__ == '__main__':
