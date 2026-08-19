@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
+import itertools
 from typing import Literal
 
 from dpsynth.relational import domain as rel_domain
@@ -245,21 +246,128 @@ def compute_hierarchical_weights(
   return weights
 
 
+def _build_exploration_domain(
+    parent_domain: mbi.Domain,
+    child_domain: mbi.Domain,
+    max_group_size: int,
+    num_permutation_slots: int,
+    strategy: Literal['empty_token', 'size_sliced'],
+) -> mbi.Domain:
+  """Constructs the discrete mbi.Domain for the permuted exploration table.
+
+  Formal Guarantees:
+    - Zero Privacy Loss Domain Definition: The resulting domain shape is
+      determined strictly by public metadata (input domain shapes, public
+      `max_group_size` bound s, and exploration slot count o). No sensitive
+      statistics or data-dependent domain dimensions are used, ensuring
+      epsilon = 0 privacy loss for domain specification.
+    - Deterministic Token Allocation: Under 'empty_token', the <EMPTY> token for
+      each child attribute A is deterministically assigned to category index
+      K_A (the original domain shape), maintaining a strictly disjoint state
+      space from real child values [0, K_A - 1].
+
+  Args:
+    parent_domain: Domain of parent table attributes.
+    child_domain: Domain of single-child attributes.
+    max_group_size: Maximum observed or clipped child group size.
+    num_permutation_slots: Permutation exploration slot count (o).
+    strategy: 'empty_token' (extends domain by +1 for <EMPTY>) or 'size_sliced'.
+
+  Returns:
+    An mbi.Domain encompassing parent columns, group_size, and o child slots.
+  """
+
+  # Add group_size to parent domain (cardinality = max_group_size + 1).
+  attrs = list(parent_domain.attributes) + ['group_size']
+  shapes = list(parent_domain.shape) + [max_group_size + 1]
+
+  # Add o slots, each with size+1 for empty_token or size for size_sliced.
+  for i in range(1, num_permutation_slots + 1):
+    for attr, size in zip(child_domain.attributes, child_domain.shape):
+      slot_size = size + 1 if strategy == 'empty_token' else size
+      attrs.append(f'slot_{i}.{attr}')
+      shapes.append(slot_size)
+  return mbi.Domain(tuple(attrs), tuple(shapes))
+
+
+def _get_slot_permutation_patterns(
+    k: int,
+    num_permutation_slots: int,
+    strategy: Literal['empty_token', 'size_sliced'],
+) -> tuple[list[tuple[int, ...]], float]:
+  """Generates slot index permutation patterns and row weight for (k, o).
+
+  Formal Guarantees:
+    - Weight Mass Conservation: For any household size k and slot count o, the
+      sum of row weights over all generated permutation patterns is strictly
+      equal to 1.0 (len(patterns) * weight == 1.0). This guarantees that
+      expanding a parent household into multiple permutation rows does not
+      scale or alter the total privacy unit mass.
+    - Exchangeability & Unbiasedness: Symmetrically enumerates all distinct
+      slot permutations, ensuring uniform marginal probability across all o
+      slots (P(Slot_1 = v) == P(Slot_2 = v) == ... == P(Slot_o = v)).
+    - Unit L1 Sensitivity per Household: Because the total emitted weight per
+      parent is exactly 1.0, adding or removing a single parent entity changes
+      the weighted exploration dataset histogram by at most L1 sensitivity
+      Delta = 1.0.
+
+  Args:
+    k: Number of children in the household.
+    num_permutation_slots: Permutation exploration slot count (o).
+    strategy: 'empty_token' (permutes real and <EMPTY>) or 'size_sliced' (clone
+      tiling).
+
+  Returns:
+    A tuple of (patterns, weight) where patterns is a list of o-tuples with
+    child relative indices [0, k-1] (or -1 for <EMPTY>), and weight is the float
+    weight for each emitted row such that len(patterns) * weight == 1.0.
+  """
+  if k == 0:
+    empty_val = -1 if strategy == 'empty_token' else 0
+    return [tuple(empty_val for _ in range(num_permutation_slots))], 1.0
+
+  if k < num_permutation_slots:
+    if strategy == 'size_sliced':
+      return [tuple(i % k for i in range(num_permutation_slots))], 1.0
+    items = list(range(k)) + [-1] * (num_permutation_slots - k)
+    patterns = list(dict.fromkeys(itertools.permutations(items)))
+    return patterns, 1.0 / len(patterns)
+
+  patterns = list(itertools.permutations(range(k), num_permutation_slots))
+  return patterns, 1.0 / len(patterns)
+
+
 def build_permuted_exploration_dataset(
     parent_dataset: mbi.Dataset,
     child_dataset: mbi.Dataset,
-    parent_primary_keys: Sequence[str | int] | np.ndarray,
-    child_foreign_keys: Sequence[str | int] | np.ndarray,
+    parent_primary_keys: Sequence[Hashable],
+    child_foreign_keys: Sequence[Hashable],
+    max_group_size: int,
     num_permutation_slots: int = 2,
     strategy: Literal['empty_token', 'size_sliced'] = 'empty_token',
 ) -> mbi.Dataset:
   """Constructs the permuted multi-slot exploration dataset for candidate selection.
 
+  Formal Guarantees:
+    - Inherited from `_get_slot_permutation_patterns`:
+      - Mass: Total dataset weight mass strictly equals parent record count
+        (sum(weights) == N_parents).
+      - Sensitivity: Adding or removing a single parent entity (and its linked
+        children) alters the weighted exploration table by at most Delta = 1.0.
+      - Exact Slot Marginal Symmetry: Uniform permutation weighting guarantees
+        identical marginal distributions across all child slots (P(Slot_i) ==
+        P(Slot_j)), preventing slot bias during candidate query selection.
+
+    - Inherited from `_build_exploration_domain`:
+      - No Private Metadata Leakage: Exploration domain dimensions are fixed
+        strictly by public metadata. No leaking private parent group sizes.
+
   Args:
     parent_dataset: Encoded discrete mbi.Dataset for the parent table.
     child_dataset: Encoded discrete mbi.Dataset for the child table.
-    parent_primary_keys: Sequence or array of parent primary key identifiers.
-    child_foreign_keys: Sequence or array of child foreign key references.
+    parent_primary_keys: Sequence of parent primary key identifiers.
+    child_foreign_keys: Sequence of child foreign key references.
+    max_group_size: Public upper bound for child group capacity (s >= 1).
     num_permutation_slots: Number of permutation slots (o) in exploration table,
       default 2.
     strategy: Exploration strategy ('empty_token' with <EMPTY> or
@@ -269,13 +377,172 @@ def build_permuted_exploration_dataset(
     An mbi.Dataset instance representing the permuted exploration table.
 
   Raises:
-    ValueError: If strategy is unsupported or num_permutation_slots < 1.
+    ValueError: If strategy is unsupported, num_permutation_slots < 1,
+      max_group_size < 1, or key lengths do not match dataset record counts.
   """
-  del parent_dataset, child_dataset, parent_primary_keys
-  del child_foreign_keys, num_permutation_slots, strategy
-  raise NotImplementedError(
-      'build_permuted_exploration_dataset is not yet implemented.'
+
+  # This input validation can probably later be moved earlier in the pipeline.
+  if max_group_size < 1:
+    raise ValueError(f'max_group_size must be >= 1, got {max_group_size}')
+  if num_permutation_slots < 1:
+    raise ValueError(
+        f'num_permutation_slots must be >= 1, got {num_permutation_slots}'
+    )
+  if strategy not in ('empty_token', 'size_sliced'):
+    raise ValueError(
+        f"strategy must be 'empty_token' or 'size_sliced', got {strategy!r}"
+    )
+
+  num_parents = parent_dataset.records
+  if len(parent_primary_keys) != num_parents:
+    raise ValueError(
+        f'parent_primary_keys length ({len(parent_primary_keys)}) does not'
+        f' match parent_dataset records ({num_parents})'
+    )
+  if len(child_foreign_keys) != child_dataset.records:
+    raise ValueError(
+        f'child_foreign_keys length ({len(child_foreign_keys)}) does not'
+        f' match child_dataset records ({child_dataset.records})'
+    )
+
+  # Vectorized translation of child foreign keys to parent row indices.
+  # parent_lookup: (Index = parent_pk, Value = parent row index [0, N_p-1]).
+  parent_lookup = pd.Series(
+      np.arange(num_parents), index=pd.Series(parent_primary_keys).values
   )
+  parent_lookup = parent_lookup[~parent_lookup.index.duplicated(keep='first')]
+
+  # child_parent_idx: (Index = child row, Value = parent row index [0, N_p-1]).
+  child_parent_idx = (
+      pd.Series(child_foreign_keys).map(parent_lookup).dropna().astype(int)
+  )
+
+  # Vectorized child counting and intra-parent ranking.
+  # parent_group_sizes: (Index = parent row, Value = child count k).
+  # child_ranks: 1D array of N_c intra-parent ranks (0, 1, ... k-1) per child.
+  parent_group_sizes = pd.Series(0, index=np.arange(num_parents))
+  if not child_parent_idx.empty:
+    counts = child_parent_idx.value_counts()
+    parent_group_sizes.loc[counts.index] = counts.values
+    child_ranks = (
+        child_parent_idx.groupby(child_parent_idx).cumcount().to_numpy()
+    )
+  else:
+    child_ranks = np.empty(0, dtype=int)
+
+  # Construct exploration domain fixed strictly by public max_group_size.
+  exploration_domain = _build_exploration_domain(
+      parent_domain=parent_dataset.domain,
+      child_domain=child_dataset.domain,
+      max_group_size=max_group_size,
+      num_permutation_slots=num_permutation_slots,
+      strategy=strategy,
+  )
+
+  parent_cols = list(parent_dataset.domain.attributes)
+  child_cols = list(child_dataset.domain.attributes)
+
+  # Example: real children have ages [0,9] -> empty_token: {'age': 10 = |[0,9]|}
+  empty_tokens = dict(
+      zip(child_dataset.domain.attributes, child_dataset.domain.shape)
+  )
+
+  # Vectorized block assembly grouped by unique family size k.
+  # Avoids iterating over all N_p parent rows by processing all parents of the
+  # same family size in bulk NumPy operations (at most s iterations total).
+  block_arrays: dict[str | int, list[np.ndarray]] = {
+      attr: [] for attr in exploration_domain.attributes
+  }
+  weights_blocks: list[np.ndarray] = []
+
+  valid_child_parents = child_parent_idx.to_numpy()
+  valid_child_rows = child_parent_idx.index.to_numpy()
+
+  for k in np.unique(parent_group_sizes.values):
+    parent_indices_k = np.where(parent_group_sizes.values == k)[0]
+    n_k = len(parent_indices_k)
+    if n_k == 0:
+      continue
+
+    # Get permutation template matrix (p_k, o) and row weight (w = 1 / p_k).
+    # Examples for o=2 under strategy='empty_token':
+    #   k=0: pattern_matrix = [[-1, -1]]                   (p_k=1, weight=1.0)
+    #   k=1: pattern_matrix = [[ 0, -1], [-1, 0]]          (p_k=2, weight=0.5)
+    #   k=2: pattern_matrix = [[ 0,  1], [ 1, 0]]          (p_k=2, weight=0.5)
+    #   k=3: pattern_matrix = [[0,1],[0,2],[1,0],[1,2]...] (p_k=6, weight=1/6)
+    patterns, weight = _get_slot_permutation_patterns(
+        int(k), num_permutation_slots, strategy
+    )
+    p_k = len(patterns)
+    pattern_matrix = np.array(patterns, dtype=np.int64)
+
+    # Broadcast parent features, group_size, and weights (length = n_k * p_k).
+    # Example: parent_indices_k=[0, 1], p_k=2 -> parent_rep=[0, 0, 1, 1]
+    parent_rep = np.repeat(parent_indices_k, p_k)
+    weights_blocks.append(np.full(n_k * p_k, weight, dtype=np.float64))
+    block_arrays['group_size'].append(np.full(n_k * p_k, k, dtype=np.int64))
+    for p_col in parent_cols:
+      block_arrays[p_col].append(parent_dataset.data[p_col][parent_rep])
+
+    # Broadcast child slot features across repeated parents.
+    if k == 0:
+      # Childless: fill all o slots with <EMPTY> (or 0 for size_sliced).
+      # Example for o=2: empty_tokens={'age': 10} -> slot_1=[10], slot_2=[10]
+      for slot_idx in range(1, num_permutation_slots + 1):
+        for c_col in child_cols:
+          val = empty_tokens[c_col] if strategy == 'empty_token' else 0
+          block_arrays[f'slot_{slot_idx}.{c_col}'].append(
+              np.full(n_k * p_k, val, dtype=np.int64)
+          )
+    else:
+      # Multi-child: construct 2D index grid (n_k, k) mapping
+      # (local_parent_idx, intra_group_rank) -> global child row index.
+      # Example: H_A has children [10, 11], H_B has [20, 21]
+      # -> child_grid = [[10, 11], [20, 21]] (row=household, col=sibling rank)
+      child_mask_k = np.isin(valid_child_parents, parent_indices_k)
+      local_parent_pos = (
+          pd.Series(np.arange(n_k), index=parent_indices_k)
+          .loc[valid_child_parents[child_mask_k]]
+          .to_numpy()
+      )
+
+      child_grid = np.empty((n_k, k), dtype=np.int64)
+      child_grid[local_parent_pos, child_ranks[child_mask_k]] = (
+          valid_child_rows[child_mask_k]
+      )
+
+      # Broadcast relative permutation slot indices into global child rows.
+      # Example for o=2, pattern_matrix=[[0, 1], [1, 0]]:
+      #   Slot 1: rel_indices=tile([0, 1], 2) -> [0, 1, 0, 1]
+      #           picks: (0,0)->10, (0,1)->11, (1,0)->20, (1,1)->21
+      #   Slot 2: rel_indices=tile([1, 0], 2) -> [1, 0, 1, 0]
+      #           picks: (0,1)->11, (0,0)->10, (1,1)->21, (1,0)->20
+      local_parent_rep = np.repeat(np.arange(n_k), p_k)
+      for slot_idx in range(1, num_permutation_slots + 1):
+        rel_indices = np.tile(pattern_matrix[:, slot_idx - 1], n_k)
+        is_empty = rel_indices == -1
+        safe_rel_indices = np.maximum(rel_indices, 0)
+        active_child_rows = child_grid[local_parent_rep, safe_rel_indices]
+
+        for c_col in child_cols:
+          slot_col_name = f'slot_{slot_idx}.{c_col}'
+          child_vals = child_dataset.data[c_col][active_child_rows]
+          if strategy == 'empty_token':
+            # For empty slot (-1), replace dummy child row with <EMPTY> token.
+            child_vals = np.where(is_empty, empty_tokens[c_col], child_vals)
+          block_arrays[slot_col_name].append(child_vals)
+
+  # Concatenate block arrays into final mbi.Dataset.
+  data_arrays: dict[str | int, np.ndarray] = {
+      attr: np.concatenate(arrs) if arrs else np.empty(0, dtype=np.int64)
+      for attr, arrs in block_arrays.items()
+  }
+  weights_array = (
+      np.concatenate(weights_blocks)
+      if weights_blocks
+      else np.empty(0, dtype=np.float64)
+  )
+  return mbi.Dataset(data_arrays, exploration_domain, weights=weights_array)
 
 
 def create_slot_linear_chain_constraints(
