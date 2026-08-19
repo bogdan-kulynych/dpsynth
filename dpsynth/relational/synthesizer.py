@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 import dataclasses
 import math
 from typing import Any, Literal
@@ -27,13 +27,394 @@ from dpsynth import api
 from dpsynth import data_generation_v3
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
+from dpsynth.discrete_mechanisms import common as dm_common
+from dpsynth.local_mode import initialization
+from dpsynth.local_mode import primitives
+from dpsynth.local_mode import vectorized_transformations as vtx
 from dpsynth.relational import domain as rel_domain
+from dpsynth.relational import transformations
+import mbi
 import numpy as np
 import pandas as pd
 
 # pylint: disable=unused-import
 _LOGGING_UNUSED = logging
 # pylint: enable=unused-import
+
+
+def _validate_input_table_columns(
+    domains: Mapping[str, domain.Schema],
+    foreign_keys: Sequence[rel_domain.ForeignKeyRelation],
+    table_columns: Mapping[str, Collection[str]],
+) -> None:
+  """Validates that all configured tables, schema columns, and keys exist.
+
+  Accepts only schema metadata, ensuring zero access to sensitive records.
+
+  Args:
+    domains: Mapping from table name to per-column AttributeType schemas.
+    foreign_keys: Sequence of foreign key relationships.
+    table_columns: Mapping from table name to collection of column names.
+
+  Raises:
+    ValueError: If a table or required column is missing.
+  """
+  for table_name, schema in domains.items():
+    if table_name not in table_columns:
+      raise ValueError(
+          f'Table {table_name!r} not found in input data. Available:'
+          f' {list(table_columns.keys())}'
+      )
+    cols = table_columns[table_name]
+    for col in schema:
+      if col not in cols:
+        raise ValueError(
+            f'Column {col!r} not found in table {table_name!r}. Available:'
+            f' {list(cols)}'
+        )
+  for fk in foreign_keys:
+    if fk.parent_primary_key not in table_columns[fk.parent_table]:
+      raise ValueError(
+          f'Parent primary key column {fk.parent_primary_key!r} not found in'
+          f' table {fk.parent_table!r}.'
+      )
+    if fk.child_foreign_key not in table_columns[fk.child_table]:
+      raise ValueError(
+          f'Child foreign key column {fk.child_foreign_key!r} not found in'
+          f' table {fk.child_table!r}.'
+      )
+
+
+def _preprocess_weighted_tables(
+    tables: Mapping[str, pd.DataFrame],
+    hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
+    rng: np.random.Generator | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, np.ndarray]]:
+  """Computes standalone hierarchical weights and filters tables to active rows (w > 0).
+
+  Args:
+    tables: Mapping from table name to input DataFrame.
+    hierarchy: Ordered topological synthesis levels from
+      `topological_sort_hierarchy()`.
+    rng: Random number generator for child record truncation.
+
+  Returns:
+    A tuple of (filtered_tables, filtered_weights) where filtered_tables
+    contains only active rows with positive weight, and filtered_weights
+    contains the 1D float64 weights for each filtered DataFrame.
+  """
+  raw_weights = transformations.compute_hierarchical_weights(
+      tables, hierarchy, rng=rng
+  )
+  filtered_tables: dict[str, pd.DataFrame] = {}
+  filtered_weights: dict[str, np.ndarray] = {}
+  for table_name, df in tables.items():
+    w = raw_weights[table_name]
+    active_mask = w > 0.0
+    if active_mask.all():
+      filtered_tables[table_name] = df
+      filtered_weights[table_name] = w
+    else:
+      filtered_tables[table_name] = df.loc[active_mask]
+      filtered_weights[table_name] = w[active_mask]
+  return filtered_tables, filtered_weights
+
+
+def _measure_root_total_count(
+    rng: np.random.Generator,
+    root_record_count: int,
+    total_count_sigma: float,
+    max_records_per_user: int = 1,
+) -> tuple[float, mbi.LinearMeasurement]:
+  """Measures the root parent table total count with Gaussian noise (Delta = 1).
+
+  Formal Guarantees:
+    - Root-Anchored Population Count: Only the root table total count is
+      perturbed and measured.
+    - Non-Negativity: Truncated to a minimum of 1.0 (estimated_total >= 1.0).
+    - Measurement Variance: Standard deviation is max_records_per_user *
+      total_count_sigma.
+
+  Args:
+    rng: NumPy random generator.
+    root_record_count: Number of records in the root parent table.
+    total_count_sigma: Gaussian noise sigma for root count.
+    max_records_per_user: Sensitivity scaling for root parent records (>= 1).
+
+  Returns:
+    A tuple of (estimated_total, total_measurement) where total_measurement
+    is an mbi.LinearMeasurement over clique ().
+  """
+  noisy_total = primitives.add_gaussian_noise(
+      rng,
+      root_record_count,
+      total_count_sigma,
+      max_records_per_user,
+  )
+  total = max(1.0, float(noisy_total))
+  total_measurement = mbi.LinearMeasurement(
+      np.array([total]),
+      (),
+      stddev=max_records_per_user * total_count_sigma,
+  )
+  return total, total_measurement
+
+
+def _run_single_col_initializer(
+    init: api.CalibratedMechanism,
+    rng: np.random.Generator,
+    data: np.ndarray,
+    weights: np.ndarray,
+    estimated_total: float | None = None,
+) -> initialization.ColumnMeasurement:
+  """Runs a single calibrated column initializer on weighted standalone table data.
+
+  Formal Guarantees:
+    - Sensitivity Alignment: Weighted histogram evaluation with sum(w) = N_root
+      ensures unit sensitivity (Delta = 1.0) without noise scaling.
+    - Initializer Contract: Dispatches directly to from_summary() on
+      NumericalInitializer, CategoricalInitializer, or OpenSetInitializer.
+
+  Args:
+    init: Calibrated column initializer.
+    rng: NumPy random generator.
+    data: 1D array of column values.
+    weights: 1D float array of row sensitivity weights.
+    estimated_total: Optional root table estimated total count for
+      NumericalInitializer heuristic one-way measurements.
+
+  Returns:
+    A ColumnMeasurement containing the discovered categorical attribute,
+    optional bin edges, and optional noisy 1-way marginal measurement.
+
+  Raises:
+    ValueError: If init is not a supported initializer type.
+  """
+  if isinstance(init, initialization.NumericalInitializer):
+    attr = init.config.attribute
+    values = np.asarray(data, dtype=float)
+    if attr.clip_to_range:
+      values = np.where(np.isnan(values), attr.min_value, values)
+    else:
+      in_domain = (values >= attr.min_value) & (values <= attr.max_value)
+      values, weights = values[in_domain], weights[in_domain]
+    if attr.dtype == 'int':
+      values = np.round(values)
+    lower, upper, gs = init.config.grid_spec
+    delta = (upper - lower) / (gs - 1)
+    indices = initialization.encode_to_grid(values, lower, upper, delta)
+    counts = np.bincount(indices, weights=weights, minlength=gs)
+    return init.from_summary(rng, counts, estimated_total=estimated_total)
+
+  if isinstance(init, initialization.CategoricalInitializer):
+    encoded = vtx.discrete_encode(data, init.config.attribute)
+    counts = np.bincount(
+        encoded, weights=weights, minlength=init.config.attribute.size
+    )
+    return init.from_summary(rng, counts)
+
+  if isinstance(init, initialization.OpenSetInitializer):
+    values = np.asarray(data, dtype=str)
+    unique_values, inverse = np.unique(values, return_inverse=True)
+    counts = np.bincount(inverse, weights=weights)
+    return init.from_summary(rng, unique_values, counts)
+
+  raise ValueError(f'Unsupported initializer type: {type(init)}')
+
+
+def _run_table_initializers(
+    calibrated_initializers: Mapping[
+        str, Mapping[str, api.CalibratedMechanism]
+    ],
+    rng: np.random.Generator,
+    tables: Mapping[str, pd.DataFrame],
+    weights: Mapping[str, np.ndarray],
+    estimated_total: float | None = None,
+) -> dict[str, dict[str, initialization.ColumnMeasurement]]:
+  """Runs calibrated column initializers across all tables and columns on weighted data.
+
+  Args:
+    calibrated_initializers: Mapping from table and column name to calibrated
+      initializers.
+    rng: NumPy random generator.
+    tables: Mapping from table name to filtered active DataFrames.
+    weights: Mapping from table name to 1D sensitivity weights.
+    estimated_total: Optional root table estimated total count for
+      NumericalInitializer heuristic one-way measurements.
+
+  Returns:
+    A nested mapping from table and column name to its ColumnMeasurement.
+  """
+  results: dict[str, dict[str, initialization.ColumnMeasurement]] = {}
+  for table_name, table_inits in calibrated_initializers.items():
+    table_results: dict[str, initialization.ColumnMeasurement] = {}
+    table_df = tables[table_name]
+    table_w = weights[table_name]
+    for col_name, init in table_inits.items():
+      table_results[col_name] = _run_single_col_initializer(
+          init=init,
+          rng=rng,
+          data=table_df[col_name].to_numpy(),
+          weights=table_w,
+          estimated_total=estimated_total,
+      )
+    results[table_name] = table_results
+  return results
+
+
+def _encode_and_compress_tables(
+    domains: Mapping[str, domain.Schema],
+    table_measurements: Mapping[
+        str, Mapping[str, initialization.ColumnMeasurement]
+    ],
+    tables: Mapping[str, pd.DataFrame],
+    weights: Mapping[str, np.ndarray],
+    compress_columns: bool = True,
+) -> tuple[
+    dict[str, data_generation_v3.TabularCodec],
+    dict[str, mbi.Dataset],
+    dict[str, dict[str, np.ndarray]],
+    dict[str, list[mbi.LinearMeasurement]],
+]:
+  """Constructs TabularCodecs, encodes to mbi.Datasets, and applies domain compression.
+
+  Formal Guarantees:
+    - Row Independence (No Cross-Example Mixing): Discretization encoding and
+      domain compression operate strictly row-by-row within each table. Each
+      input record maps to max 1 output row in its respective mbi.Dataset,
+      so no two distinct input records can affect the same output row.
+    - Sensitivity Preservation: Domain compression mappings are derived purely
+      from DP one-way marginal measurements (post-processing), guaranteeing that
+      compression does not consume additional privacy budget.
+
+  Args:
+    domains: Mapping from table name to per-column AttributeType schemas.
+    table_measurements: Mapping from table and column name to ColumnMeasurement.
+    tables: Mapping from table name to active filtered DataFrames.
+    weights: Mapping from table name to 1D float sensitivity weights.
+    compress_columns: Whether to compress rare domain categories (< 3*sigma).
+
+  Returns:
+    A tuple of (codecs, compressed_datasets, compression_mappings,
+    one_ways_by_table).
+  """
+  codecs: dict[str, data_generation_v3.TabularCodec] = {}
+  compressed_datasets: dict[str, mbi.Dataset] = {}
+  compression_mappings: dict[str, dict[str, np.ndarray]] = {}
+  one_ways_by_table: dict[str, list[mbi.LinearMeasurement]] = {}
+
+  for table_name, schema in domains.items():
+    codec = data_generation_v3.TabularCodec.from_measurements(
+        table_measurements[table_name], schema
+    )
+    raw_dataset = codec.encode(tables[table_name])
+    dataset = mbi.Dataset(
+        raw_dataset.data, raw_dataset.domain, weights=weights[table_name]
+    )
+    one_ways = codec.one_way_measurements()
+    raw_mappings = dm_common.compression_mappings(
+        one_ways, compress_columns=compress_columns
+    )
+    mappings: dict[str, np.ndarray] = {
+        str(col): arr for col, arr in raw_mappings.items()
+    }
+    if mappings:
+      dataset = dataset.compress(mappings)
+      one_ways = [m.compress(mappings, dataset.domain) for m in one_ways]
+
+    codecs[table_name] = codec
+    compressed_datasets[table_name] = dataset
+    compression_mappings[table_name] = mappings
+    one_ways_by_table[table_name] = one_ways
+
+  return codecs, compressed_datasets, compression_mappings, one_ways_by_table
+
+
+@dataclasses.dataclass(frozen=True)
+class PreprocessedTables:
+  """Engine-agnostic container for preprocessed relational tables from Phase 1.
+
+  Attributes:
+    compressed_datasets: Mapping from table name to discrete compressed
+      mbi.Dataset.
+    table_keys: Mapping from table name to dict of 1D key arrays (PKs and FKs).
+    column_codecs: Mapping from table name to TabularCodec for
+      encoding/decoding.
+    compression_mappings: Mapping from table name to column compression dicts.
+    noisy_root_total: Noisy root total count (N_root >= 1.0).
+    root_total_measurement: 0-way mbi.LinearMeasurement on ().
+    one_way_measurements: Mapping from table name to compressed 1-way marginals.
+  """
+
+  compressed_datasets: Mapping[str, mbi.Dataset]
+  table_keys: Mapping[str, Mapping[str, np.ndarray]]
+  column_codecs: Mapping[str, data_generation_v3.TabularCodec]
+  compression_mappings: Mapping[str, Mapping[str, np.ndarray]]
+  noisy_root_total: float
+  root_total_measurement: mbi.LinearMeasurement
+  one_way_measurements: Mapping[str, Sequence[mbi.LinearMeasurement]]
+
+
+def _run_table_preprocessing(
+    mechanism: MultiTableMechanism,
+    rng: np.random.Generator,
+    data: Mapping[str, pd.DataFrame],
+) -> PreprocessedTables:
+  """Executes standalone table preprocessing into compressed mbi.Datasets."""
+  _validate_input_table_columns(
+      mechanism.domains,
+      mechanism.foreign_keys,
+      {table: df.columns for table, df in data.items()},
+  )
+
+  hierarchy = rel_domain.topological_sort_hierarchy(
+      list(mechanism.domains.keys()), mechanism.foreign_keys
+  )
+  root_table = hierarchy[0][1]
+
+  filtered_tables, weights = _preprocess_weighted_tables(
+      data, hierarchy, rng=rng
+  )
+
+  table_keys: dict[str, dict[str, np.ndarray]] = {}
+  for table_name, df in filtered_tables.items():
+    table_keys[table_name] = {
+        col: df[col].to_numpy()
+        for col in df.columns
+        if col not in mechanism.domains[table_name]
+    }
+
+  noisy_root_total, root_measurement = _measure_root_total_count(
+      rng,
+      root_record_count=len(filtered_tables[root_table]),
+      total_count_sigma=mechanism.total_count_sigma,
+      max_records_per_user=mechanism.max_records_per_user,
+  )
+
+  table_measurements = _run_table_initializers(
+      mechanism.calibrated_initializers,
+      rng=rng,
+      tables=filtered_tables,
+      weights=weights,
+      estimated_total=noisy_root_total,
+  )
+
+  codecs, datasets, mappings, one_ways = _encode_and_compress_tables(
+      mechanism.domains,
+      table_measurements=table_measurements,
+      tables=filtered_tables,
+      weights=weights,
+  )
+
+  return PreprocessedTables(
+      compressed_datasets=datasets,
+      table_keys=table_keys,
+      column_codecs=codecs,
+      compression_mappings=mappings,
+      noisy_root_total=noisy_root_total,
+      root_total_measurement=root_measurement,
+      one_way_measurements=one_ways,
+  )
 
 
 def _create_table_initializers(

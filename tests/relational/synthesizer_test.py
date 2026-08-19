@@ -23,6 +23,9 @@ from dpsynth import domain
 from dpsynth.local_mode import initialization
 from dpsynth.relational import domain as rel_domain
 from dpsynth.relational import synthesizer
+import mbi
+import numpy as np
+import pandas as pd
 
 
 class SynthesizerTest(absltest.TestCase):
@@ -414,6 +417,444 @@ class SynthesizerTest(absltest.TestCase):
             foreign_keys=foreign_keys,
             exploration_strategy='unsupported_strategy',
         )
+
+  def test_validate_input_table_columns_success(self):
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(0, 100),
+            'region': domain.CategoricalAttribute(['U', 'R']),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(0, 100),
+        },
+    }
+    foreign_keys = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=3,
+        ),
+    ]
+    table_columns = {
+        'Household': ['hid', 'income', 'region'],
+        'Person': ['pid', 'hid', 'age'],
+    }
+    # Should complete without error.
+    synthesizer._validate_input_table_columns(
+        domains, foreign_keys, table_columns
+    )
+
+  def test_validate_input_table_columns_raises(self):
+    domains = {
+        'Household': {'income': domain.NumericalAttribute(0, 100)},
+        'Person': {'age': domain.NumericalAttribute(0, 100)},
+    }
+    foreign_keys = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=3,
+        ),
+    ]
+
+    with self.subTest('missing_table'):
+      table_columns = {'Household': ['hid', 'income']}
+      with self.assertRaisesRegex(ValueError, 'Table .* not found'):
+        synthesizer._validate_input_table_columns(
+            domains, foreign_keys, table_columns
+        )
+
+    with self.subTest('missing_schema_column'):
+      table_columns = {
+          'Household': ['hid'],  # missing 'income'
+          'Person': ['hid', 'age'],
+      }
+      with self.assertRaisesRegex(ValueError, 'Column .* not found in table'):
+        synthesizer._validate_input_table_columns(
+            domains, foreign_keys, table_columns
+        )
+
+    with self.subTest('missing_parent_primary_key'):
+      table_columns = {
+          'Household': ['income'],  # missing 'hid'
+          'Person': ['hid', 'age'],
+      }
+      with self.assertRaisesRegex(
+          ValueError, 'Parent primary key column .* not found'
+      ):
+        synthesizer._validate_input_table_columns(
+            domains, foreign_keys, table_columns
+        )
+
+    with self.subTest('missing_child_foreign_key'):
+      table_columns = {
+          'Household': ['hid', 'income'],
+          'Person': ['age'],  # missing 'hid'
+      }
+      with self.assertRaisesRegex(
+          ValueError, 'Child foreign key column .* not found'
+      ):
+        synthesizer._validate_input_table_columns(
+            domains, foreign_keys, table_columns
+        )
+
+  def test_preprocess_weighted_tables(self):
+    tables = {
+        'Household': pd.DataFrame({
+            'hid': ['H1', 'H2'],
+            'income': [50.0, 75.0],
+        }),
+        'Person': pd.DataFrame({
+            'pid': ['P1', 'P2', 'P3', 'P4', 'P5'],
+            'hid': ['H1', 'H1', 'H1', 'H2', 'Orphan'],
+            'age': [10, 20, 30, 40, 50],
+        }),
+    }
+    foreign_keys = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,  # H1 has 3 persons -> 1 truncated
+        ),
+    ]
+    hierarchy = rel_domain.topological_sort_hierarchy(
+        list(tables.keys()), foreign_keys
+    )
+    rng = np.random.default_rng(42)
+
+    filtered_tables, filtered_weights = synthesizer._preprocess_weighted_tables(
+        tables, hierarchy, rng=rng
+    )
+
+    # Root table retains all 2 rows with weight 1.0 each.
+    self.assertLen(filtered_tables['Household'], 2)
+    np.testing.assert_allclose(filtered_weights['Household'], [1.0, 1.0])
+
+    # Person table had 5 rows:
+    # 2 kept from H1 (weight 0.5 each), 1 kept from H2 (weight 1.0),
+    # 1 truncated from H1 (w=0.0 filtered out), 1 orphan (w=0.0 filtered out).
+    self.assertLen(filtered_tables['Person'], 3)
+    np.testing.assert_allclose(filtered_weights['Person'], [0.5, 0.5, 1.0])
+    self.assertAlmostEqual(filtered_weights['Person'].sum(), 2.0)
+
+  def test_measure_root_total_count(self):
+    rng = np.random.default_rng(123)
+    # Zero noise test
+    total, measurement = synthesizer._measure_root_total_count(
+        rng,
+        root_record_count=100,
+        total_count_sigma=0.0,
+        max_records_per_user=1,
+    )
+    self.assertEqual(total, 100.0)
+    self.assertEqual(measurement.clique, ())
+    self.assertEqual(measurement.stddev, 0.0)
+    np.testing.assert_allclose(measurement.noisy_measurement, [100.0])
+
+    # Noisy test with sensitivity scaling
+    total_noisy, measurement_noisy = synthesizer._measure_root_total_count(
+        rng,
+        root_record_count=100,
+        total_count_sigma=5.0,
+        max_records_per_user=2,
+    )
+    self.assertGreaterEqual(total_noisy, 1.0)
+    self.assertEqual(measurement_noisy.clique, ())
+    self.assertEqual(measurement_noisy.stddev, 10.0)
+
+    # Negative noisy value clips to 1.0
+    total_clipped, measurement_clipped = synthesizer._measure_root_total_count(
+        rng,
+        root_record_count=0,
+        total_count_sigma=0.0,
+        max_records_per_user=1,
+    )
+    self.assertEqual(total_clipped, 1.0)
+    np.testing.assert_allclose(measurement_clipped.noisy_measurement, [1.0])
+
+  def test_run_single_col_initializer(self):
+    rng = np.random.default_rng(42)
+
+    # 1. Numerical initializer on weighted data
+    num_init = initialization.NumericalInitializerConfig(
+        name='income',
+        num_partitions=8,
+        attribute=domain.NumericalAttribute(min_value=0.0, max_value=100.0),
+    ).configure(zcdp_rho=0.5)
+    data_num = np.array([10.0, 20.0, 30.0, 80.0, 90.0])
+    weights_num = np.array([0.5, 0.5, 1.0, 0.5, 0.5])
+    res_num = synthesizer._run_single_col_initializer(
+        num_init, rng, data_num, weights_num, estimated_total=100.0
+    )
+    self.assertIsNotNone(res_num.bin_edges)
+    self.assertIsNotNone(res_num.categorical_attribute)
+    self.assertIsNotNone(res_num.measurement)
+    self.assertEqual(res_num.measurement.clique, ('income',))
+
+    # 2. Categorical initializer on weighted data
+    cat_init = initialization.CategoricalInitializerConfig(
+        name='gender',
+        attribute=domain.CategoricalAttribute(possible_values=['M', 'F']),
+    ).configure(zcdp_rho=0.5)
+    data_cat = np.array(['M', 'M', 'F', 'F'])
+    weights_cat = np.array([0.5, 0.5, 1.0, 1.0])
+    res_cat = synthesizer._run_single_col_initializer(
+        cat_init, rng, data_cat, weights_cat
+    )
+    self.assertIsNone(res_cat.bin_edges)
+    self.assertEqual(res_cat.categorical_attribute.size, 2)
+    self.assertEqual(res_cat.measurement.clique, ('gender',))
+
+    # 3. Open-set initializer on weighted strings (including mixed-type data)
+    open_init = initialization.OpenSetInitializerConfig(
+        name='tags',
+        attribute=domain.OpenSetCategoricalAttribute(),
+        min_count=1,
+    ).configure(zcdp_rho=0.5, delta=1e-3)
+    data_open = np.array(['sport', 123, 'music'] * 50, dtype=object)
+    weights_open = np.ones(len(data_open))
+    res_open = synthesizer._run_single_col_initializer(
+        open_init, rng, data_open, weights_open
+    )
+    self.assertIn('sport', res_open.categorical_attribute.possible_values)
+    self.assertIn('123', res_open.categorical_attribute.possible_values)
+
+    # 4. Unsupported initializer raises
+    with self.assertRaisesRegex(ValueError, 'Unsupported initializer type'):
+      synthesizer._run_single_col_initializer(
+          object(), rng, data_num, weights_num  # pyrefly: ignore[bad-argument-type]
+      )
+
+  def test_run_table_initializers(self):
+    rng = np.random.default_rng(42)
+    calibrated_inits = {
+        'Household': {
+            'income': (
+                initialization.NumericalInitializerConfig(
+                    name='income',
+                    num_partitions=8,
+                    attribute=domain.NumericalAttribute(
+                        min_value=0.0, max_value=100.0
+                    ),
+                ).configure(zcdp_rho=0.1)
+            ),
+            'region': (
+                initialization.CategoricalInitializerConfig(
+                    name='region',
+                    attribute=domain.CategoricalAttribute(
+                        possible_values=['U', 'R']
+                    ),
+                ).configure(zcdp_rho=0.1)
+            ),
+        },
+        'Person': {
+            'age': (
+                initialization.NumericalInitializerConfig(
+                    name='age',
+                    num_partitions=8,
+                    attribute=domain.NumericalAttribute(
+                        min_value=0, max_value=100
+                    ),
+                ).configure(zcdp_rho=0.1)
+            ),
+        },
+    }
+    tables = {
+        'Household': pd.DataFrame({
+            'income': [20.0, 80.0],
+            'region': ['U', 'R'],
+        }),
+        'Person': pd.DataFrame({
+            'age': [15, 30, 45],
+        }),
+    }
+    weights = {
+        'Household': np.array([1.0, 1.0]),
+        'Person': np.array([0.5, 0.5, 1.0]),
+    }
+
+    results = synthesizer._run_table_initializers(
+        calibrated_inits,
+        rng=rng,
+        tables=tables,
+        weights=weights,
+        estimated_total=2.0,
+    )
+
+    self.assertIn('Household', results)
+    self.assertIn('Person', results)
+    self.assertIn('income', results['Household'])
+    self.assertIn('region', results['Household'])
+    self.assertIn('age', results['Person'])
+
+    self.assertIsInstance(
+        results['Household']['income'], initialization.ColumnMeasurement
+    )
+    self.assertIsInstance(
+        results['Household']['region'], initialization.ColumnMeasurement
+    )
+    self.assertIsInstance(
+        results['Person']['age'], initialization.ColumnMeasurement
+    )
+
+  def test_encode_and_compress_tables(self):
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(0, 100),
+            'region': domain.CategoricalAttribute(['U', 'R']),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(0, 100),
+        },
+    }
+    table_measurements = {
+        'Household': {
+            'income': initialization.ColumnMeasurement(
+                categorical_attribute=domain.CategoricalAttribute([
+                    '0',
+                    '1',
+                    '2',
+                    '3',
+                ]),
+                bin_edges=np.array([25.0, 50.0, 75.0]),
+                measurement=mbi.LinearMeasurement(
+                    np.array([5.0, 5.0, 5.0, 5.0]), ('income',), stddev=1.0
+                ),
+            ),
+            'region': initialization.ColumnMeasurement(
+                categorical_attribute=domain.CategoricalAttribute(['U', 'R']),
+                measurement=mbi.LinearMeasurement(
+                    np.array([10.0, 10.0]), ('region',), stddev=1.0
+                ),
+            ),
+        },
+        'Person': {
+            'age': initialization.ColumnMeasurement(
+                categorical_attribute=domain.CategoricalAttribute(['0', '1']),
+                bin_edges=np.array([50.0]),
+                measurement=mbi.LinearMeasurement(
+                    np.array([10.0, 10.0]), ('age',), stddev=1.0
+                ),
+            ),
+        },
+    }
+    tables = {
+        'Household': pd.DataFrame({
+            'income': [20.0, 80.0],
+            'region': ['U', 'R'],
+        }),
+        'Person': pd.DataFrame({
+            'age': [30, 60],
+        }),
+    }
+    weights = {
+        'Household': np.array([1.0, 1.0]),
+        'Person': np.array([0.5, 0.5]),
+    }
+
+    codecs, datasets, mappings, one_ways = (
+        synthesizer._encode_and_compress_tables(
+            domains,
+            table_measurements,
+            tables,
+            weights,
+            compress_columns=True,
+        )
+    )
+
+    self.assertIn('Household', codecs)
+    self.assertIn('Person', codecs)
+    self.assertIn('Household', datasets)
+    self.assertIn('Person', datasets)
+    self.assertIn('Household', mappings)
+    self.assertIn('Person', mappings)
+
+    self.assertIsInstance(datasets['Household'], mbi.Dataset)
+    self.assertIsInstance(datasets['Person'], mbi.Dataset)
+    np.testing.assert_allclose(datasets['Household'].weights, [1.0, 1.0])
+    np.testing.assert_allclose(datasets['Person'].weights, [0.5, 0.5])
+
+    self.assertIn('Household', one_ways)
+    self.assertIn('Person', one_ways)
+    self.assertNotEmpty(one_ways['Household'])
+    self.assertNotEmpty(one_ways['Person'])
+
+  def test_run_table_preprocessing_end_to_end(self):
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(0, 100),
+            'region': domain.CategoricalAttribute(['U', 'R']),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(0, 100),
+            'gender': domain.CategoricalAttribute(['M', 'F']),
+        },
+    }
+    foreign_keys = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=3,
+        ),
+    ]
+    config = synthesizer.MultiTableConfig(
+        domains=domains,
+        foreign_keys=foreign_keys,
+        init_budget_fraction=0.2,
+    )
+    mech = config.configure(zcdp_rho=0.5, max_records_per_user=1)
+    rng = np.random.default_rng(42)
+
+    data = {
+        'Household': pd.DataFrame({
+            'hid': ['H1', 'H2'],
+            'income': [30.0, 80.0],
+            'region': ['U', 'R'],
+        }),
+        'Person': pd.DataFrame({
+            'pid': ['P1', 'P2', 'P3', 'P4'],
+            'hid': ['H1', 'H1', 'H2', 'Orphan'],
+            'age': [10, 20, 40, 90],
+            'gender': ['M', 'F', 'F', 'M'],
+        }),
+    }
+
+    preprocessed = synthesizer._run_table_preprocessing(
+        mech, rng=rng, data=data
+    )
+
+    self.assertIsInstance(preprocessed, synthesizer.PreprocessedTables)
+    self.assertIn('Household', preprocessed.compressed_datasets)
+    self.assertIn('Person', preprocessed.compressed_datasets)
+
+    # Active records: 2 households, 3 valid persons (1 orphan stripped).
+    self.assertEqual(preprocessed.compressed_datasets['Household'].records, 2)
+    self.assertEqual(preprocessed.compressed_datasets['Person'].records, 3)
+
+    # Verify keys are captured in table_keys.
+    self.assertIn('hid', preprocessed.table_keys['Household'])
+    self.assertIn('hid', preprocessed.table_keys['Person'])
+    self.assertIn('pid', preprocessed.table_keys['Person'])
+    self.assertLen(preprocessed.table_keys['Household']['hid'], 2)
+    self.assertLen(preprocessed.table_keys['Person']['hid'], 3)
+
+    # Verify root total count and measurement.
+    self.assertGreaterEqual(preprocessed.noisy_root_total, 1.0)
+    self.assertEqual(preprocessed.root_total_measurement.clique, ())
+
+    # Verify codecs and one-ways.
+    self.assertIn('Household', preprocessed.column_codecs)
+    self.assertIn('Person', preprocessed.column_codecs)
+    self.assertIn('Household', preprocessed.one_way_measurements)
+    self.assertIn('Person', preprocessed.one_way_measurements)
 
 
 if __name__ == '__main__':
