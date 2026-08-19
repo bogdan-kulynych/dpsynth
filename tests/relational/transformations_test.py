@@ -978,6 +978,130 @@ class TransformationsTest(absltest.TestCase):
         root_weight_sum = t_weights[root_mask].sum()
         self.assertAlmostEqual(root_weight_sum, 1.0, places=5)
 
+  def test_create_slot_linear_chain_constraints_single_or_empty_attribute(self):
+    # Single attribute: no within-slot Frankenstein combinations possible
+    child_dom_1 = mbi.Domain.fromdict({'age': 10})
+    constraints_1 = transformations.create_slot_linear_chain_constraints(
+        child_domain=child_dom_1, num_permutation_slots=2
+    )
+    self.assertEqual(constraints_1, [])
+
+    # Empty domain: no attributes -> empty constraints
+    child_dom_0 = mbi.Domain((), ())
+    constraints_0 = transformations.create_slot_linear_chain_constraints(
+        child_domain=child_dom_0, num_permutation_slots=2
+    )
+    self.assertEqual(constraints_0, [])
+
+  def test_create_slot_linear_chain_constraints_2attrs_o2(self):
+    child_dom = mbi.Domain.fromdict({'age': 10, 'gender': 2})
+    constraints = transformations.create_slot_linear_chain_constraints(
+        child_domain=child_dom, num_permutation_slots=2
+    )
+    # o = 2 slots, D = 2 attributes -> 2 * (2 - 1) = 2 constraints
+    self.assertLen(constraints, 2)
+
+    c1, c2 = constraints[0], constraints[1]
+    self.assertEqual(c1.domain.attributes, ('slot_1.age', 'slot_1.gender'))
+    self.assertEqual(c1.domain.shape, (11, 3))
+    self.assertEqual(c2.domain.attributes, ('slot_2.age', 'slot_2.gender'))
+    self.assertEqual(c2.domain.shape, (11, 3))
+
+    # Verify log-potential values on c1
+    pot1 = c1.potential
+    # 1. Real + Real combinations (age in [0, 9], gender in [0, 1]) -> 0.0
+    for a in range(10):
+      for g in range(2):
+        self.assertEqual(float(pot1.values[a, g]), 0.0)
+
+    # 2. <EMPTY> + <EMPTY> combination (age = 10, gender = 2) -> 0.0
+    self.assertEqual(float(pot1.values[10, 2]), 0.0)
+
+    # 3. Mixed combinations (<EMPTY> + Real or Real + <EMPTY>) -> -inf
+    for a in range(10):
+      self.assertEqual(float(pot1.values[a, 2]), -np.inf)
+    for g in range(2):
+      self.assertEqual(float(pot1.values[10, g]), -np.inf)
+
+  def test_create_slot_linear_chain_constraints_3attrs_transitivity(self):
+    # 3 attributes: age (4 bins), gender (2 bins), edu (3 bins)
+    # Extended shape with <EMPTY>: (5, 3, 4)
+    child_dom = mbi.Domain.fromdict({'age': 4, 'gender': 2, 'edu': 3})
+    constraints = transformations.create_slot_linear_chain_constraints(
+        child_domain=child_dom, num_permutation_slots=1
+    )
+    # o = 1 slot, D = 3 attributes -> 1 * (3 - 1) = 2 pairwise constraints
+    self.assertLen(constraints, 2)
+    c_age_gender, c_gender_edu = constraints[0], constraints[1]
+
+    self.assertEqual(
+        c_age_gender.domain.attributes, ('slot_1.age', 'slot_1.gender')
+    )
+    self.assertEqual(c_age_gender.domain.shape, (5, 3))
+    self.assertEqual(
+        c_gender_edu.domain.attributes, ('slot_1.gender', 'slot_1.edu')
+    )
+    self.assertEqual(c_gender_edu.domain.shape, (3, 4))
+
+    # Test transitivity by summing log-potentials across full 3D slot domain
+    full_slot_domain = mbi.Domain(
+        ('slot_1.age', 'slot_1.gender', 'slot_1.edu'), (5, 3, 4)
+    )
+    combined_pot = c_age_gender.potential.expand(
+        full_slot_domain
+    ) + c_gender_edu.potential.expand(full_slot_domain)
+
+    # Invariants for combined potential:
+    # 1. 100% Real states (age < 4, gender < 2, edu < 3) -> 0.0
+    for a in range(4):
+      for g in range(2):
+        for e in range(3):
+          self.assertEqual(float(combined_pot.values[a, g, e]), 0.0)
+
+    # 2. 100% <EMPTY> state (age = 4, gender = 2, edu = 3) -> 0.0
+    self.assertEqual(float(combined_pot.values[4, 2, 3]), 0.0)
+
+    # 3. Any mixed/partial state -> -inf
+    for a in range(5):
+      for g in range(3):
+        for e in range(4):
+          is_all_real = (a < 4) and (g < 2) and (e < 3)
+          is_all_empty = (a == 4) and (g == 2) and (e == 3)
+          if not is_all_real and not is_all_empty:
+            self.assertEqual(float(combined_pot.values[a, g, e]), -np.inf)
+
+  def test_create_slot_linear_chain_constraints_multi_slot_and_attributes(self):
+    # 4 attributes, 3 permutation slots -> 3 * (4 - 1) = 9 constraints
+    child_dom = mbi.Domain.fromdict({'a': 2, 'b': 3, 'c': 4, 'd': 5})
+    constraints = transformations.create_slot_linear_chain_constraints(
+        child_domain=child_dom, num_permutation_slots=3
+    )
+    self.assertLen(constraints, 9)
+    expected_pairs = [
+        ('slot_1.a', 'slot_1.b'),
+        ('slot_1.b', 'slot_1.c'),
+        ('slot_1.c', 'slot_1.d'),
+        ('slot_2.a', 'slot_2.b'),
+        ('slot_2.b', 'slot_2.c'),
+        ('slot_2.c', 'slot_2.d'),
+        ('slot_3.a', 'slot_3.b'),
+        ('slot_3.b', 'slot_3.c'),
+        ('slot_3.c', 'slot_3.d'),
+    ]
+    actual_pairs = [c.domain.attributes for c in constraints]
+    self.assertEqual(actual_pairs, expected_pairs)
+
+  def test_create_slot_linear_chain_constraints_validation_errors(self):
+    child_dom = mbi.Domain.fromdict({'age': 10, 'gender': 2})
+    with self.assertRaises(ValueError):
+      transformations.create_slot_linear_chain_constraints(
+          child_domain=child_dom, num_permutation_slots=0
+      )
+    with self.assertRaises(ValueError):
+      transformations.create_slot_linear_chain_constraints(
+          child_domain=child_dom, num_permutation_slots=-1
+      )
+
 
 class TransformationsFormalGuaranteesPropertyTest(absltest.TestCase):
   """Property-based tests verifying mathematical invariants and DP guarantees."""
@@ -1636,6 +1760,64 @@ class TransformationsFormalGuaranteesPropertyTest(absltest.TestCase):
     self.assertEqual(
         int(ds_orphans.data['group_size'][ds_orphans.data['p'] == 1][0]), 1
     )
+
+  def test_property_slot_linear_chain_constraints_transitive_locking(self):
+    """Verifies that linear chain constraints guarantee 100% Real or 100% <EMPTY>."""
+    rng = np.random.default_rng(4242)
+    for _ in range(10):
+      n_attrs = int(rng.integers(2, 6))
+      shapes = tuple(int(x) for x in rng.integers(2, 6, size=n_attrs))
+      attrs = tuple(f'c_{i}' for i in range(n_attrs))
+      child_dom = mbi.Domain(attrs, shapes)
+
+      o = int(rng.integers(1, 4))
+      constraints = transformations.create_slot_linear_chain_constraints(
+          child_domain=child_dom, num_permutation_slots=o
+      )
+
+      # 1. Constraint count and pairwise structure: o * (D - 1)
+      self.assertLen(constraints, o * (n_attrs - 1))
+
+      # 2. Maximum clique size is exactly 2 (treewidth <= 2)
+      for c in constraints:
+        self.assertLen(c.domain.attributes, 2)
+        self.assertLen(c.clique, 2)
+
+      # 3. Test transitivity for Slot 1
+      slot_1_constraints = [
+          c for c in constraints if c.domain.attributes[0].startswith('slot_1.')
+      ]
+      self.assertLen(slot_1_constraints, n_attrs - 1)
+
+      slot_1_attrs = tuple(f'slot_1.{a}' for a in attrs)
+      slot_1_shapes = tuple(sz + 1 for sz in shapes)
+      slot_1_full_domain = mbi.Domain(slot_1_attrs, slot_1_shapes)
+
+      # Combine potentials
+      combined_pot = slot_1_constraints[0].potential.expand(slot_1_full_domain)
+      for c in slot_1_constraints[1:]:
+        combined_pot = combined_pot + c.potential.expand(slot_1_full_domain)
+
+      # Sample random configurations to verify all-or-nothing locking
+      for _ in range(30):
+        # Generate random state
+        state = [int(rng.integers(0, sz + 1)) for sz in shapes]
+        is_all_real = all(val < sz for val, sz in zip(state, shapes))
+        is_all_empty = all(val == sz for val, sz in zip(state, shapes))
+
+        pot_val = float(combined_pot.values[tuple(state)])
+        if is_all_real or is_all_empty:
+          self.assertEqual(
+              pot_val,
+              0.0,
+              msg=f'Allowed state penalized: state={state}, shapes={shapes}',
+          )
+        else:
+          self.assertEqual(
+              pot_val,
+              -np.inf,
+              msg=f'Mixed state not zeroed: state={state}, shapes={shapes}',
+          )
 
 
 if __name__ == '__main__':

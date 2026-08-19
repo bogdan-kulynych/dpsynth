@@ -554,8 +554,18 @@ def create_slot_linear_chain_constraints(
   For each slot, generates D-1 pairwise adjacent constraints ((S_i.A_1,
   S_i.A_2),
   (S_i.A_2, S_i.A_3), ...) setting log-potential to -inf on mixed states,
-  ensuring
-  sampled slots are 100% Real or 100% <EMPTY> with bounded treewidth <= 2.
+  ensuring sampled slots are 100% Real or 100% <EMPTY> with bounded treewidth <=
+  2.
+
+  Formal Guarantees:
+    - Transitive Monolithic Slot Locking: By chaining pairwise constraints
+      (A_1 = E <=> A_2 = E <=> ... <=> A_D = E), any mixed state containing both
+      real values and <EMPTY> has joint log-potential = -inf (P = 0.0).
+    - Treewidth <= 2 Bounded Complexity: Pairwise linear chains avoid star-graph
+      hubs and high-dimensional cliques, keeping maximum constraint clique size
+      to 2 (memory <= (K+1)^2 entries per factor) to prevent junction tree OOMs.
+    - Zero Private Information: Constraints are constructed purely from public
+      domain metadata and slot count, inducing zero DP privacy loss (eps = 0).
 
   Args:
     child_domain: Sub-domain representing attributes of a single child record.
@@ -563,11 +573,44 @@ def create_slot_linear_chain_constraints(
 
   Returns:
     A list of mbi.Constraint instances enforcing monolithic slot locking.
+
+  Raises:
+    ValueError: If num_permutation_slots < 1.
   """
-  del child_domain, num_permutation_slots
-  raise NotImplementedError(
-      'create_slot_linear_chain_constraints is not yet implemented.'
-  )
+  if num_permutation_slots < 1:
+    raise ValueError(
+        f'num_permutation_slots must be >= 1, got {num_permutation_slots}'
+    )
+
+  child_attrs = child_domain.attributes
+  child_shape = child_domain.shape
+  num_attrs = len(child_attrs)
+
+  # Single- or 0-attribute child domain requires no cross-attribute constraints.
+  if num_attrs < 2:
+    return []
+
+  constraints: list[mbi.Constraint] = []
+  for slot_idx in range(1, num_permutation_slots + 1):  # slot_1 to slot_o
+    for i in range(num_attrs - 1):
+      attr1, attr2 = child_attrs[i], child_attrs[i + 1]
+      k1, k2 = child_shape[i], child_shape[i + 1]
+
+      slot_attr1 = f'slot_{slot_idx}.{attr1}'
+      slot_attr2 = f'slot_{slot_idx}.{attr2}'
+      pair_domain = mbi.Domain((slot_attr1, slot_attr2), (k1 + 1, k2 + 1))
+
+      # Mixed states: (k1, [0..k2-1]) and ([0..k1-1], k2).
+      invalid_combos = [(k1, a2) for a2 in range(k2)] + [
+          (a1, k2) for a1 in range(k1)
+      ]
+      invalid_arr = np.array(invalid_combos, dtype=np.int64)
+
+      constraints.append(
+          mbi.Constraint(domain=pair_domain, invalid=invalid_arr)
+      )
+
+  return constraints
 
 
 def symmetrize_to_wide_domain(
