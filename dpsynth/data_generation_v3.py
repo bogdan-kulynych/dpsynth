@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 
-def _create_initializers(
+def create_initializers(
     domains: Mapping[str, domain.AttributeType],
     numerical_bins: int,
 ) -> dict[str, api.MechanismConfig]:
@@ -404,7 +404,7 @@ class TabularConfig(api.MechanismConfig):
     inits = (
         self.initializers
         if self.initializers is not None
-        else _create_initializers(self.domains, self.numerical_bins)
+        else create_initializers(self.domains, self.numerical_bins)
     )
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.

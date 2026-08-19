@@ -407,7 +407,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   def test_custom_initializers_inherit_k(self):
     domains = self._categorical_domains()
-    inits = data_generation_v3._create_initializers(domains, 32)
+    inits = data_generation_v3.create_initializers(domains, 32)
     config = TabularConfig(domains=domains, initializers=inits)
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=2)
     for init in calibrated.calibrated_initializers.values():
