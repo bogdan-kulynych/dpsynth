@@ -1,10 +1,14 @@
 # DPSynth: Differentially Private Synthetic Tabular Data
 
+[![Documentation](https://readthedocs.org/projects/dpsynth/badge/?version=latest)](https://dpsynth.readthedocs.io/en/latest/)
+
 DPSynth is a library for differentially private synthetic tabular data
 generation. Given a sensitive dataset of records defined w.r.t. a single-table
 schema, our library can generate a synthetic version of the dataset, preserving
 the structure and statistical properties of the source data while satisfying
 differential privacy.
+
+📖 **[Full documentation on ReadTheDocs](https://dpsynth.readthedocs.io/en/latest/)**
 
 > [!WARNING]
 > **This library is under active development.** APIs may change without notice,

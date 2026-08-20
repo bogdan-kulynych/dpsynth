@@ -15,12 +15,18 @@
 """Public API for DPSynth."""
 
 # pylint: disable=g-importing-member
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 from dpsynth import api
+from dpsynth import constraints
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
+from dpsynth.api import CalibratedMechanism
+from dpsynth.api import MechanismConfig
+from dpsynth.constraints import Constraint
 from dpsynth.data_generation_v3 import TabularConfig
 from dpsynth.data_generation_v3 import TabularMechanism
 from dpsynth.data_generation_v3 import TabularSynthesizer
 from dpsynth.domain import CategoricalAttribute
+from dpsynth.domain import FreeFormTextAttribute
 from dpsynth.domain import NumericalAttribute
+from dpsynth.domain import OpenSetCategoricalAttribute
