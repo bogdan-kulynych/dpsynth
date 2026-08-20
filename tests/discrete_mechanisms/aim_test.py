@@ -93,7 +93,7 @@ class AIMTest(absltest.TestCase):
   def test_correlated_workload_regression_with_aim(self):
     workload = [("a",), ("b",), ("c",), ("a", "b"), ("a", "c"), ("b", "c")]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = independent.IndependentConfig(pgm_iters=500)
+    baseline_config = independent.IndependentConfig()
     mechanism_error, baseline_error = (
         _correlated_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -106,7 +106,7 @@ class AIMTest(absltest.TestCase):
     config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = independent.IndependentConfig(pgm_iters=500)
+    baseline_config = independent.IndependentConfig()
     mechanism_error, baseline_error = (
         _correlated_workload_mechanism_baseline_errors(
             config, baseline_config, workload

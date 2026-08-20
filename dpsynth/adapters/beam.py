@@ -402,14 +402,12 @@ def generate_from_marginals(
   )
 
   initial_measurements = [total_measurement, *codec.one_way_measurements()]
-  mbi_constraints = tuple(c.to_mbi() for c in synth.cross_attribute_constraints)
   logging.info('[DPSynth/Beam]: Running discrete mechanism.')
   # pyrefly: ignore[missing-attribute,not-callable]
-  mechanism_result = synth.calibrated_discrete_mechanism(
+  mechanism_result = synth.base_mechanism(
       rng,
       data=marginals,
       initial_measurements=initial_measurements,
-      constraints=mbi_constraints,
   )
   synthetic_data = codec.decode(
       mechanism_result.synthetic_data, rng, column_order
@@ -432,7 +430,7 @@ def _run_two_pass(
   """Two-pass Beam pipeline that delegates to a local TabularConfig."""
 
   sigma = synth.total_count_sigma
-  inits = cast(dict[str, CalibratedInitializer], synth.calibrated_initializers)
+  inits = cast(dict[str, CalibratedInitializer], synth.initializers)
   init_configs = {name: c.config for name, c in inits.items()}
   if pipeline_kwargs is None:
     pipeline_kwargs = {}
@@ -472,10 +470,9 @@ def _run_two_pass(
     mbi_domain = data_generation_v3.TabularCodec.from_measurements(
         column_measurements, synth.domains
     ).mbi_domain
-    # pyrefly: ignore[missing-attribute]
-    workload = synth.calibrated_discrete_mechanism.supporting_cliques(
-        mbi_domain
-    )
+
+    assert hasattr(synth.config.discrete_mechanism, 'supporting_cliques')
+    workload = synth.config.discrete_mechanism.supporting_cliques(mbi_domain)
 
     # Pass 2: compute the marginal workload.
     with beam.Pipeline(**pipeline_kwargs) as p:
@@ -501,7 +498,7 @@ def _run_two_pass(
       shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class BeamTabularMechanism(api.CalibratedMechanism):
   """Beam-backed DPMechanism with the TabularMechanism calibrate->run API."""
 
@@ -527,7 +524,7 @@ class BeamTabularMechanism(api.CalibratedMechanism):
     )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class BeamTabularConfig(api.MechanismConfig):
   """Beam-backed DPMechanism with the TabularConfig calibrate->run API.
 
@@ -550,6 +547,13 @@ class BeamTabularConfig(api.MechanismConfig):
   synthesizer: data_generation_v3.TabularConfig
   temp_location: str | None = None
   pipeline_options: beam.options.pipeline_options.PipelineOptions | None = None
+
+  def __post_init__(self):
+    if not hasattr(self.synthesizer.discrete_mechanism, 'supporting_cliques'):
+      raise ValueError(
+          'self.synthesizer.discrete_mechanism must have a supporting_cliques'
+          ' method.'
+      )
 
   def configure(
       self, *, zcdp_rho, delta=0, max_records_per_user=1

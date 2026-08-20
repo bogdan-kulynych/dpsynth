@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import dataclasses
-import math
 import warnings
 
 from absl import logging
@@ -190,37 +189,44 @@ class TabularMechanism(api.CalibratedMechanism):
 
   Attributes:
     domains: Mapping from column names to attribute domain specifications.
-    calibrated_discrete_mechanism: The calibrated discrete mechanism.
-    calibrated_initializers: Per-column calibrated initializers.
+    base_mechanism: The calibrated discrete mechanism.
+    initializers: Per-column calibrated initializers.
     total_count_sigma: Sigma for the total-count mechanism.
     cross_attribute_constraints: Constraints to enforce on generated data.
     max_records_per_user: Assumed upper bound on the number of records a single
       user contributes.
   """
 
+  config: TabularConfig
   domains: Mapping[str, domain.AttributeType]
-  calibrated_discrete_mechanism: discrete_mechanisms.DiscreteMechanism
-  calibrated_initializers: dict[str, api.CalibratedMechanism]
+  base_mechanism: discrete_mechanisms.CalibratedMechanism
+  initializers: dict[str, api.CalibratedMechanism]
   total_count_sigma: float = dataclasses.field(repr=False)
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
   max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
-    """Returns the composed DpEvent for all sub-mechanisms.
-
-    Returns:
-      A ComposedDpEvent combining all initializer and discrete mechanism events.
-    """
-    events = [init.dp_event for init in self.calibrated_initializers.values()]
+    """Returns the composed DpEvent for all sub-mechanisms."""
+    events = [init.dp_event for init in self.initializers.values()]
     events.append(
         dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
     )
-    events.append(self.calibrated_discrete_mechanism.dp_event)
+    events.append(self.base_mechanism.dp_event)
+    events = [e for e in events if not isinstance(e, dp_accounting.NoOpDpEvent)]
+
+    if not events:
+      return dp_accounting.NoOpDpEvent()
+    if len(events) == 1:
+      return events[0]
     return dp_accounting.ComposedDpEvent(events)
 
   def __call__(
-      self, rng: np.random.Generator, data: pd.DataFrame
+      self,
+      rng: np.random.Generator,
+      data: pd.DataFrame,
+      *,
+      cross_attribute_constraints: Sequence[constraints.Constraint] = (),
   ) -> DataGenerationResult:
     """Generates differentially private synthetic data.
 
@@ -228,6 +234,7 @@ class TabularMechanism(api.CalibratedMechanism):
       rng: A numpy random number generator.
       data: The dataset to generate synthetic data for. Must contain all columns
         specified in ``domains``.
+      cross_attribute_constraints: Constraints to enforce on generated data.
 
     Returns:
       A DataGenerationResult containing the synthetic DataFrame.
@@ -240,6 +247,10 @@ class TabularMechanism(api.CalibratedMechanism):
         raise ValueError(
             f'{col=} not found in dataset. Available: {list(data.columns)}'
         )
+    if not cross_attribute_constraints:
+      cross_attribute_constraints = self.config.cross_attribute_constraints
+
+    mbi_constraints = tuple(c.to_mbi() for c in cross_attribute_constraints)
 
     # Phase 1: Per-column initialization.
     # Measure total count first, then run per-column initializers.
@@ -252,13 +263,13 @@ class TabularMechanism(api.CalibratedMechanism):
     )
     total = max(1.0, noisy_total)
     total_measurement = mbi.LinearMeasurement(
-        np.array([total]),  # pyrefly: ignore[bad-argument-type]
-        (),
+        noisy_measurement=np.array([total]),
+        clique=(),
         stddev=self.max_records_per_user * self.total_count_sigma,
     )
 
     results: dict[str, initialization.ColumnMeasurement] = {}
-    for col, init in self.calibrated_initializers.items():
+    for col, init in self.initializers.items():
       if isinstance(init, initialization.NumericalInitializer):
         results[col] = init(rng, data[col].values, estimated_total=float(total))
       else:
@@ -274,10 +285,7 @@ class TabularMechanism(api.CalibratedMechanism):
     # initial measurements so the mechanism does not re-measure them.
     column_order = [col for col in data.columns if col in self.domains]
     initial_measurements = [total_measurement, *codec.one_way_measurements()]
-    mbi_constraints = tuple(
-        c.to_mbi() for c in self.cross_attribute_constraints
-    )
-    mechanism_result = self.calibrated_discrete_mechanism(
+    mechanism_result = self.base_mechanism(
         rng,
         data=discrete,
         initial_measurements=initial_measurements,
@@ -297,7 +305,7 @@ class TabularMechanism(api.CalibratedMechanism):
     )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class TabularConfig(api.MechanismConfig):
   """Configures end-to-end DP synthetic data generation.
 
@@ -323,9 +331,7 @@ class TabularConfig(api.MechanismConfig):
   """
 
   domains: Mapping[str, domain.AttributeType]
-  discrete_mechanism: discrete_mechanisms.DiscreteMechanismConfig = (
-      dataclasses.field(default_factory=discrete_mechanisms.MSTConfig)
-  )
+  discrete_mechanism: api.MechanismConfig = discrete_mechanisms.MSTConfig()
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
   initializers: dict[str, api.MechanismConfig] | None = None
@@ -421,7 +427,7 @@ class TabularConfig(api.MechanismConfig):
         )
         for col, init in inits.items()
     }
-    total_count_sigma = math.sqrt(0.5 / per_col_rho)
+    total_count_sigma = (0.5 / per_col_rho) ** 0.5
 
     calibrated_discrete = self.discrete_mechanism.configure(
         max_records_per_user=max_records_per_user,
@@ -429,16 +435,16 @@ class TabularConfig(api.MechanismConfig):
     )
 
     return TabularMechanism(
+        config=self,
         domains=self.domains,
-        calibrated_discrete_mechanism=calibrated_discrete,
-        calibrated_initializers=calibrated_inits,
+        base_mechanism=calibrated_discrete,
+        initializers=calibrated_inits,
         total_count_sigma=total_count_sigma,
         max_records_per_user=max_records_per_user,
-        cross_attribute_constraints=self.cross_attribute_constraints,
     )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class TabularSynthesizer(TabularConfig):
   """Deprecated. Use TabularConfig and TabularMechanism instead."""
 

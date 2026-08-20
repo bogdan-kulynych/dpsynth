@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Module implementing the SWIFT budget allocation heuristic."""
+
 # NOTE: This module is tested in swift_test.py.
 
 from collections.abc import Sequence

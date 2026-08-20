@@ -15,12 +15,12 @@
 """Implementation of the Adaptive+Iterative Mechanism (AIM)."""
 
 from collections.abc import Iterable, Mapping
+from collections.abc import Sequence
 import dataclasses
-
 from absl import logging
 import dp_accounting
+from dpsynth import api
 from dpsynth.discrete_mechanisms import accounting
-from dpsynth.discrete_mechanisms import base
 from dpsynth.discrete_mechanisms import common
 import jax.numpy as jnp
 import mbi
@@ -87,7 +87,7 @@ def _worst_approximated(
 
 
 @dataclasses.dataclass(frozen=True)
-class AIMConfig(base.DiscreteMechanismConfig):
+class AIMConfig(api.MechanismConfig):
   """Configuration for the AIM mechanism.
 
   Details are described in the paper:
@@ -122,6 +122,7 @@ class AIMConfig(base.DiscreteMechanismConfig):
   anneal_factor: float = 4.0
   select_budget_fraction: float = 0.1
   pgm_iters: int = 1000
+  marginal_oracle: mbi.MarginalOracle | None = None
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
     """Returns the workload cliques filtered by max_marginal_size."""
@@ -129,40 +130,45 @@ class AIMConfig(base.DiscreteMechanismConfig):
         domain, self.workload, self.max_marginal_size
     )
 
-  def _allocate_budget(self, remaining_rho: float) -> Mapping[str, float]:
-    """Allocates the entire remaining budget to the adaptive loop."""
-    return {'_loop_rho': remaining_rho}
-
-  def _create_mechanism(self, **kwargs) -> 'AIM':
-    return AIM(**kwargs)
+  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+    api.validate_max_records_per_user(max_records_per_user)
+    return AIM(
+        config=self,
+        zcdp_rho=zcdp_rho,
+        max_records_per_user=max_records_per_user,
+    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AIM(base.DiscreteMechanism):
+class AIM(api.CalibratedMechanism):
   """Calibrated AIM instance."""
 
   config: AIMConfig
-  _loop_rho: float
-
-  def _one_way_cliques(self, data):
-    """Returns only the workload-specified one-way cliques."""
-    return common.one_way_cliques(self.config.workload, data.domain)
+  zcdp_rho: float
+  max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
     """Returns the DP event for the AIM mechanism."""
-    events = self._one_way_dp_event()
-    events.append(dp_accounting.ZCDpEvent(self._loop_rho))  # pyrefly: ignore[bad-argument-type]
-    return dp_accounting.ComposedDpEvent(events)
+    return dp_accounting.ZCDpEvent(self.zcdp_rho)
 
-  def _run(self, rng, data, measurements, constraints, phase_times):
-    """Adaptively selects, measures, and estimates in an annealed loop."""
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      data: mbi.Dataset | mbi.CliqueVector,
+      *,
+      initial_measurements: Sequence[mbi.LinearMeasurement] | None = None,
+      constraints: Sequence[mbi.Constraint] = (),
+  ) -> common.DiscreteMechanismResult:
+    common.validate_initial_measurements(initial_measurements)
+    measurements = list(initial_measurements) if initial_measurements else []
+    phase_times = {}
     logging.info('[AIM]: Starting Mechanism.')
     zcdp_rho = self.zcdp_rho
     terminate = False
-    rho_remaining = self._loop_rho
+    rho_remaining = self.zcdp_rho
     max_rounds = self.config.max_rounds or 16 * len(data.domain)
-    rho_per_round = self._loop_rho / max_rounds  # pyrefly: ignore[unsupported-operation]
+    rho_per_round = self.zcdp_rho / max_rounds
 
     #########################################################################
     # Compile workload into candidate measurements, and precompute answers. #
@@ -185,7 +191,7 @@ class AIM(base.DiscreteMechanism):
     t = 0
     while not terminate:
       t += 1
-      if rho_remaining < 2 * rho_per_round:  # pyrefly: ignore[unsupported-operation]
+      if rho_remaining < 2 * rho_per_round:
         logging.info('[AIM] Final round, Using all remaining privacy budget.')
         rho_per_round = rho_remaining
         terminate = True
@@ -194,11 +200,13 @@ class AIM(base.DiscreteMechanism):
       # Select a marginal query worst approximated by the current model.     #
       ########################################################################
       with common.timed(phase_times, 'selection'):
-        rho_remaining -= rho_per_round  # pyrefly: ignore[unsupported-operation]
+        rho_remaining -= rho_per_round
         fraction = self.config.select_budget_fraction
-        sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)  # pyrefly: ignore[unsupported-operation]
-        epsilon = accounting.zcdp_exponential_eps(fraction * rho_per_round)  # pyrefly: ignore[unsupported-operation]
-        size_limit = self.config.max_model_size * (zcdp_rho - rho_remaining) / zcdp_rho  # pyrefly: ignore[unsupported-operation]
+        sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)
+        epsilon = accounting.zcdp_exponential_eps(fraction * rho_per_round)
+        size_limit = (
+            self.config.max_model_size * (zcdp_rho - rho_remaining) / zcdp_rho
+        )
         small_candidates = _filter_candidates(candidates, model, size_limit)
 
         estimates = mbi.marginal_oracles.bulk_variable_elimination(
@@ -222,7 +230,7 @@ class AIM(base.DiscreteMechanism):
           '[AIM] Round %d, Budget used: %.4f, Measuring: %s, Candidates: %d,'
           ' cliques: %d, treewidth: %d, memory: %d bytes',
           t,
-          (zcdp_rho - rho_remaining) / zcdp_rho,  # pyrefly: ignore[unsupported-operation]
+          (zcdp_rho - rho_remaining) / zcdp_rho,
           marginal_query,
           len(small_candidates),
           summary.num_cliques,
@@ -272,10 +280,15 @@ class AIM(base.DiscreteMechanism):
       )
       if np.linalg.norm(new_estimate - old_estimate, ord=1) <= threshold:
         # No useful information at this noise level, increase budget per round.
-        rho_per_round *= self.config.anneal_factor  # pyrefly: ignore[unsupported-operation]
+        rho_per_round *= self.config.anneal_factor
         fraction = self.config.select_budget_fraction
         sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)
         logging.info('[AIM] Reducing sigma: %.1f', sigma)
 
     synthetic_data = model.synthetic_data()
-    return model, synthetic_data, measurements
+    return common.DiscreteMechanismResult(
+        synthetic_data=synthetic_data,
+        measurements=measurements,
+        model=model,
+        diagnostics=common.clique_stats(model),
+    )

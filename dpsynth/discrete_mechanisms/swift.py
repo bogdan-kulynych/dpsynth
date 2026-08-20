@@ -31,12 +31,11 @@ import functools
 import itertools
 import math
 import time
-import typing
 
 from absl import logging
 import dp_accounting
+from dpsynth import api
 from dpsynth.discrete_mechanisms import accounting
-from dpsynth.discrete_mechanisms import base
 from dpsynth.discrete_mechanisms import clique_tree
 from dpsynth.discrete_mechanisms import common
 from dpsynth.discrete_mechanisms import swift_utils
@@ -46,7 +45,7 @@ import numpy as np
 
 
 @dataclasses.dataclass(frozen=True)
-class SWIFTConfig(base.DiscreteMechanismConfig):
+class SWIFTConfig(api.MechanismConfig):
   """Configuration for the SWIFT mechanism.
 
   Attributes:
@@ -60,17 +59,14 @@ class SWIFTConfig(base.DiscreteMechanismConfig):
     pgm_iters: Number of mirror descent iterations for PGM estimation.
     select_budget_frac: Fraction of the total budget used for selecting which
       marginals to measure.
-    one_way_budget_fraction: Fraction of zCDP budget for one-way marginals.
   """
 
   workload: Mapping[mbi.Clique, float] | Iterable[mbi.Clique] | None = None
   max_clique_size: float = 1e7
   max_marginal_size: float = 1e6
   pgm_iters: int = 10_000
+  marginal_oracle: mbi.MarginalOracle | None = None
   select_budget_frac: float = 0.1
-  one_way_budget_fraction: float = 0.1
-
-  # Internal state set by configure.
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
     """Returns the workload cliques filtered by max_marginal_size."""
@@ -78,39 +74,43 @@ class SWIFTConfig(base.DiscreteMechanismConfig):
         domain, self.workload, self.max_marginal_size
     )
 
-  def _allocate_budget(self, remaining_rho: float) -> Mapping[str, float]:
-    """Splits the remaining budget between selection and measurement."""
-    select_rho = remaining_rho * self.select_budget_frac
-    return {
-        '_select_rho': select_rho,
-        'measurement_rho': remaining_rho - select_rho,
-    }
-
-  def _create_mechanism(self, **kwargs) -> 'SWIFT':
-    return SWIFT(**kwargs)
+  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+    api.validate_max_records_per_user(max_records_per_user)
+    return SWIFT(
+        config=self,
+        gdp_budget=accounting.zcdp_to_gdp(zcdp_rho),
+        max_records_per_user=max_records_per_user,
+    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class SWIFT(base.DiscreteMechanism):
+class SWIFT(api.CalibratedMechanism):
   """Calibrated SWIFT instance."""
 
   config: SWIFTConfig
-  _select_rho: float
+  gdp_budget: float
+  max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
     """Returns the DP event for the SWIFT mechanism."""
-    # SWIFT's budget is split between one-way, selection, and measurement.
-    # All three are Gaussian mechanism applications.
-    return dp_accounting.ZCDpEvent(self.zcdp_rho)  # pyrefly: ignore[bad-argument-type]
+    return dp_accounting.GaussianDpEvent(
+        accounting.gdp_gaussian_sigma(self.gdp_budget)
+    )
 
-  def _run(self, rng, data, measurements, constraints, phase_times):
-    """Runs SWIFT's select-measure-estimate pipeline in a single pass."""
-    assert self._select_rho is not None
-    assert self.measurement_rho is not None
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      data: mbi.Dataset | mbi.CliqueVector,
+      *,
+      initial_measurements: Sequence[mbi.LinearMeasurement] = (),
+      constraints: Sequence[mbi.Constraint] = (),
+  ) -> common.DiscreteMechanismResult:
+    common.validate_initial_measurements(initial_measurements)
+    phase_times = {}
 
-    # Budgets in GDP units, derived from the zCDP allocation set by configure.
-    gdp_budget = accounting.zcdp_to_gdp(self._select_rho + self.measurement_rho)
+    select_gdp_budget = self.gdp_budget * self.config.select_budget_frac
+    measure_gdp_budget = self.gdp_budget - select_gdp_budget
 
     #########################################################################
     # Compile workload into candidate measurements, and precompute answers. #
@@ -125,46 +125,42 @@ class SWIFT(base.DiscreteMechanism):
 
     with common.timed(phase_times, 'from_projectable'):
       answers = mbi.CliqueVector.from_projectable(data, candidates)  # pyrefly: ignore[bad-argument-type]
-    domain = data.domain
 
     with common.timed(phase_times, 'initial_mirror_descent'):
       estimator = mbi.estimation.MirrorDescent(self.config.marginal_oracle)
       model = estimator.estimate(
-          domain,
-          measurements,
+          data.domain,
+          list(initial_measurements),  # pyrefly: ignore[bad-argument-type]
           iters=self.config.pgm_iters,
           constraints=constraints,
       )
-      model = typing.cast(mbi.MarkovRandomField, model)
 
     ###########################################
     # Select subset of candidates to measure. #
     ###########################################
     with common.timed(phase_times, 'selection'):
-      l1_error_budget = accounting.zcdp_to_gdp(self._select_rho)
-      budget_remaining = gdp_budget - l1_error_budget
 
       with common.timed(phase_times, 'compute_initial_errors'):
-        errors = _compute_initial_errors(
+        noisy_errors = _compute_initial_errors(
             rng,
             answers,  # pyrefly: ignore[bad-argument-type]
-            model,
+            model,  # pyrefly: ignore[bad-argument-type]
             list(candidates),
-            l1_error_budget,
+            select_gdp_budget,
             max_records_per_user=self.max_records_per_user,
         )
 
       with common.timed(phase_times, 'select_queries'):
         selected, jtree = select_queries(
-            errors,
+            noisy_errors,
             candidates,
-            domain,
+            data.domain,
             self.config.max_clique_size,
-            budget_remaining,
+            measure_gdp_budget,  # budget is not consumed (no data dependence)
         )
 
-    all_cliques = [m.clique for m in measurements] + list(selected)
-    logging.info('[SWIFT]:\n%s', mbi.summarize(domain, all_cliques, jtree))
+    all_cliques = [m.clique for m in initial_measurements] + list(selected)
+    logging.info(mbi.summarize(data.domain, all_cliques, jtree))
 
     ########################################################
     # Precompile MirrorDescent + synth while measuring.    #
@@ -172,68 +168,62 @@ class SWIFT(base.DiscreteMechanism):
     closed_oracle = functools.partial(
         mbi.marginal_oracles.message_passing_stable, jtree=jtree
     )
-    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)  # pyrefly: ignore[bad-argument-type]
-    rows = int(mbi.estimation.minimum_variance_unbiased_total(measurements))
+    estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)
+    rows = mbi.estimation.minimum_variance_unbiased_total(initial_measurements)  # pyrefly: ignore[bad-argument-type]
+    rows = int(max(rows, 1))
 
-    pgm_future, synth_future = None, None
-    try:
-      pgm_future = estimator.precompile(
-          domain, measurements, extra_cliques=list(selected)  # pyrefly: ignore[bad-argument-type]
-      )
-      synth_future = mbi.extensions.precompile(domain, list(jtree.nodes), rows)
-      logging.info('[SWIFT] Started precompilation of MirrorDescent + synth.')
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logging.warning('[SWIFT] Precompile failed (non-fatal): %s', e)
+    pgm_future = estimator.precompile(
+        data.domain, list(initial_measurements), extra_cliques=list(selected)  # pyrefly: ignore[bad-argument-type]
+    )
+    synth_future = mbi.extensions.precompile(
+        data.domain, list(jtree.nodes), rows
+    )
+    logging.info('[SWIFT] Started precompilation of MirrorDescent + synth.')
 
     ##########################################
     # Measure the selected marginal queries. #
     ##########################################
     with common.timed(phase_times, 'measurement'):
       logging.info('[SWIFT] Starting measurements.')
-      new_measurements, _ = _measure_selected_marginals(
+      new_measurements = _measure_selected_marginals(
           rng,
-          answers,  # pyrefly: ignore[bad-argument-type]
+          answers,
           selected,
-          budget_remaining,
+          measure_gdp_budget,
           max_records_per_user=self.max_records_per_user,
       )
-      measurements.extend(new_measurements)
+      measurements = list(initial_measurements) + new_measurements
       logging.info('[SWIFT] Finished measurements.')
 
     ########################################################
     # Estimate the model using all measurements            #
     ########################################################
     with common.timed(phase_times, 'estimation'):
-      if pgm_future is not None:
-        t0 = time.time()
-        try:
-          pgm_future.result()
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logging.warning('[SWIFT] PGM precompile failed (non-fatal): %s', e)
-        logging.info('[SWIFT] PGM precompile wait: %.2fs', time.time() - t0)
+      t0 = time.time()
+      pgm_future.result()
+      logging.info('[SWIFT] PGM precompile wait: %.2fs', time.time() - t0)
 
-      callback_fn = mbi.callbacks.default(measurements, domain)
       final_model = estimator.estimate(
-          domain,
+          data.domain,
           measurements,
           iters=self.config.pgm_iters,
-          callback_fn=callback_fn,
+          callback_fn=mbi.callbacks.default(measurements, data.domain),
           constraints=constraints,
       )
-      assert isinstance(final_model, mbi.MarkovRandomField)
       logging.info('[SWIFT] Estimated final model.')
 
-    if synth_future is not None:
-      t0 = time.time()
-      try:
-        synth_future.result()
-      except Exception as e:  # pylint: disable=broad-exception-caught
-        logging.warning('[SWIFT] Synth precompile failed (non-fatal): %s', e)
-      logging.info('[SWIFT] Synth precompile wait: %.2fs', time.time() - t0)
+    t0 = time.time()
+    synth_future.result()
+    logging.info('[SWIFT] Synth precompile wait: %.2fs', time.time() - t0)
 
-    syn = mbi.extensions.synthetic_data(final_model, rows)
+    syn = mbi.extensions.synthetic_data(final_model, rows)  # pyrefly: ignore[bad-argument-type]
     logging.info('[SWIFT] Generated %d synthetic records.', rows)
-    return final_model, syn, measurements
+    return common.DiscreteMechanismResult(
+        synthetic_data=syn,
+        measurements=measurements,
+        model=final_model,
+        diagnostics=common.clique_stats(final_model),
+    )
 
 
 def _is_supported(clique: mbi.Clique, tree: nx.Graph) -> bool:
@@ -354,7 +344,7 @@ def build_best_clique_tree(
 
 def _compute_initial_errors(
     rng: np.random.Generator,
-    data: mbi.Projectable,
+    data: mbi.Dataset | mbi.CliqueVector,
     model: mbi.MarkovRandomField,
     cliques: Sequence[mbi.Clique],
     gdp_budget: float,
@@ -365,7 +355,7 @@ def _compute_initial_errors(
   sigma_per_clique = max_records_per_user * accounting.gdp_gaussian_sigma(
       budget_per_clique
   )
-  errors = common.compute_independence_errors(data, model, cliques)
+  errors = common.compute_independence_errors(data, model, cliques)  # pyrefly: ignore[bad-argument-type]
   for cl in errors:
     errors[cl] += rng.normal(loc=0.0, scale=sigma_per_clique)
   return errors
@@ -422,11 +412,11 @@ def select_queries(
 
 def _measure_selected_marginals(
     rng: np.random.Generator,
-    data: mbi.Projectable,
+    data: mbi.Dataset | mbi.CliqueVector,
     selected: dict[mbi.Clique, float],
     budget_remaining: float,
     max_records_per_user: int = 1,
-) -> tuple[list[mbi.LinearMeasurement], float]:
+) -> list[mbi.LinearMeasurement]:
   """Measures the selected marginal queries."""
   measurements = []
   for cl in selected:
@@ -441,4 +431,4 @@ def _measure_selected_marginals(
   logging.info('[SWIFT] Measured selected marginals.')
   logging.info('[SWIFT] Selected %d marginals.', len(selected))
 
-  return measurements, budget_remaining
+  return measurements

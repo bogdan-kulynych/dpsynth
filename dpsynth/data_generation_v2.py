@@ -35,8 +35,8 @@ def generate(
     delta: float,
     *,
     discrete_config: (
-        discrete_mechanisms.DiscreteMechanismConfig
-        | discrete_mechanisms.DiscreteMechanism
+        discrete_mechanisms.MechanismConfig
+        | discrete_mechanisms.CalibratedMechanism
     ) = discrete_mechanisms.MSTConfig(),
     numerical_bins: int = 32,
     one_way_marginal_budget_fraction: float = 0.1,

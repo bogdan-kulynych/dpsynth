@@ -16,14 +16,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 import dataclasses
 import itertools
 import typing
 
 from absl import logging
 import dp_accounting
-from dpsynth.discrete_mechanisms import base
+from dpsynth import api
+from dpsynth.discrete_mechanisms import accounting
 from dpsynth.discrete_mechanisms import common
 import mbi
 import networkx as nx
@@ -87,7 +88,8 @@ def dp_maximum_spanning_tree(
   candidates = list(weights.keys())
   r = len(list(nx.connected_components(tree)))
   if exponential_mechanism_epsilon is None:
-    exponential_mechanism_epsilon = np.sqrt(8 * zcdp_rho / max(r - 1, 1))  # pyrefly: ignore[unsupported-operation]
+    assert zcdp_rho is not None
+    exponential_mechanism_epsilon = np.sqrt(8 * zcdp_rho / max(r - 1, 1))
   for _ in range(r - 1):
     candidates = [e for e in candidates if not ds.connected(*e)]
     wgts = np.array([weights[e] for e in candidates])
@@ -103,13 +105,13 @@ def dp_maximum_spanning_tree(
 
 def _select_two_way_marginal_queries(
     rng: np.random.Generator,
-    data: mbi.Projectable,
+    data: mbi.Dataset | mbi.CliqueVector,
     zcdp_rho: float,
     one_way_measurements: list[mbi.LinearMeasurement],
     initial_marginal_queries: Sequence[tuple[str, ...]] = (),
     maximum_marginal_size: int = 10_000_000,
     max_records_per_user: int = 1,
-) -> list[tuple[str, ...]]:
+) -> list[tuple[str, str]]:
   """Selects a set of two-way marginal queries with DP to form a spanning tree.
 
   This mechanism satisfies rho-zCDP.
@@ -130,7 +132,7 @@ def _select_two_way_marginal_queries(
   """
 
   independent_model = mbi.estimation.MirrorDescent().estimate(
-      data.domain, one_way_measurements, iters=2500
+      data.domain, list(one_way_measurements), iters=2500
   )
   independent_model = typing.cast(mbi.MarkovRandomField, independent_model)
 
@@ -143,12 +145,12 @@ def _select_two_way_marginal_queries(
   ]
   logging.info('[MST]: Computing Quality Scores')
   weights = common.compute_independence_errors(
-      data, independent_model, candidates
+      data, independent_model, candidates  # pyrefly: ignore[bad-argument-type]
   )
 
-  return dp_maximum_spanning_tree(  # pyrefly: ignore[bad-return]
-      rng,
-      weights,  # pyrefly: ignore[bad-argument-type]
+  return dp_maximum_spanning_tree(
+      rng=rng,
+      weights=weights,  # pyrefly: ignore[bad-argument-type]
       zcdp_rho=zcdp_rho,
       initial_marginal_queries=initial_marginal_queries,  # pyrefly: ignore[bad-argument-type]
       sensitivity=max_records_per_user,
@@ -156,7 +158,7 @@ def _select_two_way_marginal_queries(
 
 
 @dataclasses.dataclass(frozen=True)
-class MSTConfig(base.DiscreteMechanismConfig):
+class MSTConfig(api.MechanismConfig):
   """Configuration for the maximum spanning tree mechanism.
 
   Details are described in the paper:
@@ -167,10 +169,12 @@ class MSTConfig(base.DiscreteMechanismConfig):
     select_budget_fraction: The fraction of the remaining budget (after one-way
       measurements) to use for selecting two-way marginal queries.
     maximum_marginal_size: The maximum size of a marginal query.
-    _select_rho: zCDP budget for the exponential mechanism (set by configure).
   """
 
-  select_budget_fraction: float = 1 / 3
+  marginal_oracle: mbi.MarginalOracle | None = None
+  pgm_iters: int = 5000
+
+  select_budget_fraction: float = 1 / 2
   maximum_marginal_size: int = 10_000_000
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
@@ -181,24 +185,22 @@ class MSTConfig(base.DiscreteMechanismConfig):
         self.maximum_marginal_size,
     )
 
-  def _allocate_budget(self, remaining_rho: float) -> Mapping[str, float]:
-    """Splits the remaining budget between selection and measurement."""
-    select_rho = remaining_rho * self.select_budget_fraction
-    return {
-        '_select_rho': select_rho,
-        'measurement_rho': remaining_rho - select_rho,
-    }
-
-  def _create_mechanism(self, **kwargs) -> 'MST':
-    return MST(**kwargs)
+  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+    api.validate_max_records_per_user(max_records_per_user)
+    return MST(
+        config=self,
+        zcdp_rho=zcdp_rho,
+        max_records_per_user=max_records_per_user,
+    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class MST(base.DiscreteMechanism):
+class MST(api.CalibratedMechanism):
   """Calibrated MST instance."""
 
   config: MSTConfig
-  _select_rho: float = -1.0
+  zcdp_rho: float
+  max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
@@ -211,8 +213,61 @@ class MST(base.DiscreteMechanism):
       return _select_two_way_marginal_queries(
           rng,
           data,
-          self._select_rho,  # pyrefly: ignore[bad-argument-type]
+          self.zcdp_rho * self.config.select_budget_fraction,
           measurements,
           maximum_marginal_size=self.config.maximum_marginal_size,
           max_records_per_user=self.max_records_per_user,
       )
+
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      data: mbi.Dataset | mbi.CliqueVector,
+      *,
+      initial_measurements: Sequence[mbi.LinearMeasurement] = (),
+      constraints: Sequence[mbi.Constraint] = (),
+  ) -> common.DiscreteMechanismResult:
+    """Selects, measures, estimates, and generates in the compressed domain."""
+    common.validate_initial_measurements(initial_measurements)
+    phase_times = {}
+    selected = self._select(rng, data, initial_measurements, phase_times)
+    all_cliques = [m.clique for m in initial_measurements] + list(selected)
+
+    logging.info(mbi.summarize(data.domain, all_cliques))
+
+    # Kick off async AOT compilation of the estimator while we measure.
+    estimator = mbi.estimation.MirrorDescent(self.config.marginal_oracle)
+    pgm_future = estimator.precompile(
+        data.domain, list(initial_measurements), extra_cliques=list(selected)  # pyrefly: ignore[bad-argument-type]
+    )
+
+    with common.timed(phase_times, 'measurement'):
+      select_rho = self.zcdp_rho * self.config.select_budget_fraction
+      sigma = accounting.zcdp_gaussian_sigma(self.zcdp_rho - select_rho)
+      new_measurements = common.measure_marginals_with_noise(
+          rng=rng,
+          data=data,  # pyrefly: ignore[bad-argument-type]
+          marginal_queries=selected,
+          gdp_sigma=sigma,
+          max_records_per_user=self.max_records_per_user,
+      )
+      measurements = list(initial_measurements) + new_measurements
+
+    with common.timed(phase_times, 'estimation'):
+      pgm_future.result()
+      model = estimator.estimate(
+          data.domain,
+          measurements,
+          iters=self.config.pgm_iters,
+          callback_fn=mbi.callbacks.default(measurements, data.domain),
+          constraints=constraints,
+      )
+      assert isinstance(model, mbi.MarkovRandomField)
+
+    synthetic_data = model.synthetic_data()
+    return common.DiscreteMechanismResult(
+        synthetic_data=synthetic_data,
+        measurements=measurements,
+        model=model,
+        diagnostics=common.clique_stats(model),
+    )

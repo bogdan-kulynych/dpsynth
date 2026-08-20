@@ -12,20 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Implementations of mechanisms that operate over discrete data."""
+"""Implementations of mechanisms that operate over discrete data.
+
+Note: This mechanism is not intended to be called directly. It should typically
+be used within `DiscreteSynthesizer` or `TabularSynthesizer`. Users who call it
+directly will miss out on features like 1-way measurement selection and domain
+compression.
+"""
 
 # pylint: disable=g-importing-member
 
+from dpsynth.api import CalibratedMechanism
+from dpsynth.api import MechanismConfig
 from dpsynth.discrete_mechanisms.aim import AIM
 from dpsynth.discrete_mechanisms.aim import AIMConfig
 from dpsynth.discrete_mechanisms.aim_gdp import AIMGDP
 from dpsynth.discrete_mechanisms.aim_gdp import AIMGDPConfig
-from dpsynth.discrete_mechanisms.base import DiscreteMechanism
-from dpsynth.discrete_mechanisms.base import DiscreteMechanismConfig
 from dpsynth.discrete_mechanisms.common import DiscreteMechanismResult
 from dpsynth.discrete_mechanisms.common import MechanismDiagnostics
 from dpsynth.discrete_mechanisms.direct import Direct
 from dpsynth.discrete_mechanisms.direct import DirectConfig
+from dpsynth.discrete_mechanisms.discrete import DiscreteConfig
+from dpsynth.discrete_mechanisms.discrete import DiscreteMechanism
 from dpsynth.discrete_mechanisms.independent import Independent
 from dpsynth.discrete_mechanisms.independent import IndependentConfig
 from dpsynth.discrete_mechanisms.mst import MST

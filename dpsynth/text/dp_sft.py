@@ -52,7 +52,7 @@ from jax_privacy import training
 import optax
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class FineTuneResult:
   """Result of running ``DPFineTuner``.
 
@@ -68,7 +68,7 @@ class FineTuneResult:
   params: training.Params
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class DPFineTuner(api.DPMechanism):
   """Differentially private fine-tuning of Gemma models via DP-SGD.
 

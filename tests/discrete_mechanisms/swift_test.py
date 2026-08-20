@@ -146,5 +146,6 @@ class SWIFTTest(absltest.TestCase):
       actual = result.model.project([col]).datavector()
       np.testing.assert_allclose(actual, expected, atol=1)
 
+
 if __name__ == '__main__':
   absltest.main()

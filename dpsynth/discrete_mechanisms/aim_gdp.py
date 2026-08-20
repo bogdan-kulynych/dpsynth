@@ -15,13 +15,14 @@
 """Variant of the Adaptive+Iterative Mechanism (AIM) that satisfies Gaussian DP."""
 
 from collections.abc import Iterable, Mapping
+from collections.abc import Sequence
 import dataclasses
 import typing
 
 from absl import logging
 import dp_accounting
+from dpsynth import api
 from dpsynth.discrete_mechanisms import accounting
-from dpsynth.discrete_mechanisms import base
 from dpsynth.discrete_mechanisms import common
 import jax.numpy as jnp
 import mbi
@@ -144,7 +145,7 @@ def _worst_approximated(
 
 # select loop, injecting the budgeting strategy (zCDP vs. GDP) as configuration.
 @dataclasses.dataclass(frozen=True)
-class AIMGDPConfig(base.DiscreteMechanismConfig):
+class AIMGDPConfig(api.MechanismConfig):
   """Configuration for the AIM mechanism with Gaussian DP.
 
   Details are described in the paper:
@@ -186,6 +187,7 @@ class AIMGDPConfig(base.DiscreteMechanismConfig):
   anneal_factor: float = 4.0
   select_budget_fraction: float = 0.1
   pgm_iters: int = 1000
+  marginal_oracle: mbi.MarginalOracle | None = None
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
     """Returns the workload cliques filtered by max_marginal_size."""
@@ -193,39 +195,44 @@ class AIMGDPConfig(base.DiscreteMechanismConfig):
         domain, self.workload, self.max_marginal_size
     )
 
-  def _allocate_budget(self, remaining_rho: float) -> Mapping[str, float]:
-    """Allocates the entire remaining budget to the adaptive loop."""
-    return {'_loop_rho': remaining_rho}
-
-  def _create_mechanism(self, **kwargs) -> 'AIMGDP':
-    return AIMGDP(**kwargs)
+  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+    api.validate_max_records_per_user(max_records_per_user)
+    return AIMGDP(
+        config=self,
+        gdp_budget=accounting.zcdp_to_gdp(zcdp_rho),
+        max_records_per_user=max_records_per_user,
+    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class AIMGDP(base.DiscreteMechanism):
+class AIMGDP(api.CalibratedMechanism):
   """Calibrated AIMGDP instance."""
 
   config: AIMGDPConfig
-  _loop_rho: float
-
-  def _one_way_cliques(self, data):
-    """Returns only the workload-specified one-way cliques."""
-    return common.one_way_cliques(self.config.workload, data.domain)
+  gdp_budget: float
+  max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
     """Returns the DP event for the AIM-GDP mechanism."""
-    events = self._one_way_dp_event()
-    # The loop's privacy cost in zCDP terms.
-    events.append(dp_accounting.ZCDpEvent(self._loop_rho))  # pyrefly: ignore[bad-argument-type]
-    return dp_accounting.ComposedDpEvent(events)
+    return dp_accounting.GaussianDpEvent(
+        accounting.gdp_gaussian_sigma(self.gdp_budget)
+    )
 
-  def _run(self, rng, data, measurements, constraints, phase_times):
-    """Adaptively selects, measures, and estimates in an annealed loop (GDP)."""
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      data: mbi.Dataset | mbi.CliqueVector,
+      *,
+      initial_measurements: Sequence[mbi.LinearMeasurement] | None = None,
+      constraints: Sequence[mbi.Constraint] = (),
+  ) -> common.DiscreteMechanismResult:
+    common.validate_initial_measurements(initial_measurements)
+    measurements = list(initial_measurements) if initial_measurements else []
+    phase_times = {}
     logging.info('[AIM] Starting Mechanism.')
 
-    # Convert loop's zCDP budget to GDP budget for internal allocation.
-    gdp_budget = accounting.zcdp_to_gdp(self._loop_rho)  # pyrefly: ignore[bad-argument-type]
+    gdp_budget = self.gdp_budget
 
     terminate = False
     budget_remaining = gdp_budget
@@ -359,4 +366,9 @@ class AIMGDP(base.DiscreteMechanism):
         )
 
     synthetic_data = model.synthetic_data()
-    return model, synthetic_data, measurements
+    return common.DiscreteMechanismResult(
+        synthetic_data=synthetic_data,
+        measurements=measurements,
+        model=model,
+        diagnostics=common.clique_stats(model),
+    )

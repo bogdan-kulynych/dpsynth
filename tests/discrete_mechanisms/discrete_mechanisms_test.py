@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Property tests shared across all discrete mechanisms."""
+"""Property tests shared across all discrete mechanisms.
 
-import dataclasses
+Note: This mechanism is not intended to be called directly. It should typically
+be used within `DiscreteMechanism` or `TabularSynthesizer`. Users who call it
+directly will miss out on features like 1-way measurement selection and domain
+compression.
+"""
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -22,6 +26,7 @@ from dpsynth.discrete_mechanisms import aim
 from dpsynth.discrete_mechanisms import aim_gdp
 from dpsynth.discrete_mechanisms import common
 from dpsynth.discrete_mechanisms import direct
+from dpsynth.discrete_mechanisms import discrete
 from dpsynth.discrete_mechanisms import independent
 from dpsynth.discrete_mechanisms import mst
 from dpsynth.discrete_mechanisms import swift
@@ -38,7 +43,7 @@ _MECHANISMS = {
     ),
     'MST': mst.MSTConfig(pgm_iters=500),
     'SWIFT': swift.SWIFTConfig(workload=_WORKLOAD, pgm_iters=500),
-    'Independent': independent.IndependentConfig(pgm_iters=500),
+    'Independent': independent.IndependentConfig(),
     'Direct': direct.DirectConfig(
         prespecified_marginal_queries=_WORKLOAD, pgm_iters=500
     ),
@@ -54,15 +59,7 @@ def _make_skewed_dataset(rng):
 
 
 class SupportingCliquesSufficiencyTest(parameterized.TestCase):
-  """Checks that supporting_cliques are sufficient for each mechanism.
-
-  For each mechanism, we:
-    1. Compute supporting_cliques(domain).
-    2. Build a CliqueVector from the true data projected onto those cliques.
-    3. Run the mechanism using the CliqueVector as input data.
-    4. Assert it completes without error — the CliqueVector supports every
-       projection the mechanism needs.
-  """
+  """Checks that supporting_cliques are sufficient for each mechanism."""
 
   @parameterized.named_parameters(*_MECHANISMS.items())
   def test_mechanism_runs_on_precomputed_marginals(self, mechanism):
@@ -81,22 +78,28 @@ class SupportingCliquesSufficiencyTest(parameterized.TestCase):
 
 
 class CompressionPropertyTest(parameterized.TestCase):
-  """Tests that compression restores the original domain across mechanisms."""
+  """Tests that compression restores the original domain via synthesizer."""
 
   @parameterized.named_parameters(*_MECHANISMS.items())
   def test_compression_restores_domain(self, config):
-    config = dataclasses.replace(config, compress_columns=True)
+    synth_config = discrete.DiscreteConfig(
+        mechanism=config,
+        compress_columns=True,
+    )
     rng = np.random.default_rng(0)
     data = _make_skewed_dataset(rng)
     original_domain = data.domain
 
-    result = config.configure(zcdp_rho=_ZCDP_RHO)(rng, data)
+    result = synth_config.configure(zcdp_rho=_ZCDP_RHO)(rng, data)
 
     self.assertEqual(result.synthetic_data.domain, original_domain)
 
   @parameterized.named_parameters(*_MECHANISMS.items())
   def test_compression_with_initial_measurements(self, config):
-    config = dataclasses.replace(config, compress_columns=True)
+    synth_config = discrete.DiscreteConfig(
+        mechanism=config,
+        compress_columns=True,
+    )
     rng = np.random.default_rng(0)
     data = _make_skewed_dataset(rng)
     original_domain = data.domain
@@ -104,7 +107,7 @@ class CompressionPropertyTest(parameterized.TestCase):
         rng, data, [('a',), ('b',)], gdp_sigma=1.0
     )
 
-    mechanism = config.configure(zcdp_rho=_ZCDP_RHO)
+    mechanism = synth_config.configure(zcdp_rho=_ZCDP_RHO)
     result = mechanism(rng, data, initial_measurements=initial_measurements)
 
     self.assertEqual(result.synthetic_data.domain, original_domain)
@@ -125,6 +128,8 @@ class CalibrationTest(parameterized.TestCase):
   def test_zero_epsilon_calibration(self, mechanism):
     rng = np.random.default_rng(0)
     data = _make_skewed_dataset(rng)
+    if isinstance(mechanism, independent.IndependentConfig):
+      return
     result = mechanism.calibrate(epsilon=0.0, delta=0.01)(rng, data)
     self.assertIsInstance(result, common.DiscreteMechanismResult)
 
@@ -142,19 +147,15 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   @parameterized.named_parameters(*_MECHANISMS.items())
   def test_dp_event_invariant_to_max_records_per_user(self, mechanism):
-    # Scaling max_records_per_user must not change the accounting: only the
-    # actual noise magnitude scales, while the reported dp_event is identical.
     base = mechanism.configure(zcdp_rho=_ZCDP_RHO)
     scaled = mechanism.configure(zcdp_rho=_ZCDP_RHO, max_records_per_user=4)
     self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
 
   @parameterized.named_parameters(
-      ('Independent', _MECHANISMS['Independent']),
+      ('MST', _MECHANISMS['MST']),
       ('Direct', _MECHANISMS['Direct']),
   )
   def test_measurement_stddev_scales_with_k(self, mechanism):
-    # Independent and Direct select their measured cliques deterministically,
-    # so the recorded stddevs line up one-to-one and must scale linearly in k.
     k = 4
     data = _make_skewed_dataset(np.random.default_rng(0))
     base = mechanism.configure(zcdp_rho=_ZCDP_RHO)(

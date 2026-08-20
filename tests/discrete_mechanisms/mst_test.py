@@ -75,13 +75,33 @@ class MSTTest(absltest.TestCase):
     self.assertEqual(actual_mst_edges, expected_mst_edges)
 
   def test_fits_one_way_marginals(self):
+    """MST + externally-supplied 1-ways should recover all one-way marginals."""
     data = mbi.Dataset.synthetic(mbi.Domain(['a', 'b', 'c'], [3, 4, 5]), N=1000)
 
-    config = mst.MSTConfig(pgm_iters=500).configure(zcdp_rho=10000)
+    calibrated = mst.MSTConfig(pgm_iters=500).configure(zcdp_rho=10000)
 
-    result = config(np.random.default_rng(0), data)
+    # One-way marginals are now supplied externally by the synthesizer layer.
+    # Simulate that by constructing them here with near-zero noise.
+    initial_measurements = []
+    for col in data.domain:
+      true_marginal = data.project([col]).datavector()
+      initial_measurements.append(
+          mbi.LinearMeasurement(
+              noisy_measurement=true_marginal,
+              clique=(col,),
+              stddev=1e-6,
+              query=mbi.DatavectorQuery(use_for_total_estimation=True),
+          )
+      )
+
+    result = calibrated(
+        np.random.default_rng(0),
+        data,
+        initial_measurements=initial_measurements,
+    )
 
     self.assertIsInstance(result, common.DiscreteMechanismResult)
+    # 3 externally-supplied one-ways + 2 MST-selected pairwise = 5 total.
     self.assertLen(result.measurements, 2 * len(data.domain) - 1)
     for col in data.domain:
       expected = data.project([col]).datavector()

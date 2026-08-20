@@ -34,6 +34,18 @@ import scipy.special
 import tqdm
 
 
+def validate_initial_measurements(
+    initial_measurements: Sequence[mbi.LinearMeasurement] | None,
+) -> None:
+  """Warns if the discrete mechanism is called without initial measurements."""
+  if not initial_measurements:
+    logging.warning(
+        'This mechanism is not intended to be called directly, but through '
+        'the higher-level APIs (TabularMechanism, DiscreteMechanism). It '
+        'will run without error, but is missing 1-way marginal selection.'
+    )
+
+
 @dataclasses.dataclass
 class MechanismDiagnostics:
   """Diagnostic info from a discrete mechanism run.

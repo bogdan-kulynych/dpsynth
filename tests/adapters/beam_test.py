@@ -392,7 +392,7 @@ class BeamTabularConfigTest(parameterized.TestCase):
       ('mst', discrete_mechanisms.MSTConfig(pgm_iters=250)),
       (
           'independent',
-          discrete_mechanisms.IndependentConfig(pgm_iters=250),
+          discrete_mechanisms.IndependentConfig(),
       ),
       (
           'direct',

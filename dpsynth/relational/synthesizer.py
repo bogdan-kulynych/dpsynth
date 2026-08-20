@@ -908,8 +908,8 @@ class MultiTableConfig(api.MechanismConfig):
 
   domains: Mapping[str, domain.Schema]
   foreign_keys: Sequence[rel_domain.ForeignKeyRelation] = ()
-  discrete_mechanism: discrete_mechanisms.DiscreteMechanismConfig = (
-      dataclasses.field(default_factory=discrete_mechanisms.AIMConfig)
+  discrete_mechanism: discrete_mechanisms.MechanismConfig = dataclasses.field(
+      default_factory=discrete_mechanisms.AIMConfig
   )
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1

@@ -12,40 +12,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This mechanisms measures all 1-way marginals via the Gaussian mechanism."""
+"""This mechanism independently estimates data from initial measurements."""
 
+from collections.abc import Sequence
 import dataclasses
-
 import dp_accounting
-from dpsynth.discrete_mechanisms import accounting
-from dpsynth.discrete_mechanisms import base
+from dpsynth import api
+from dpsynth.discrete_mechanisms import common
 import mbi
+import numpy as np
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class IndependentConfig(base.DiscreteMechanismConfig):
-  """Measures only one-way marginals, allocating the entire budget to them."""
+class IndependentConfig(api.MechanismConfig):
+  """Independent config that doesn't select or measure any marginals."""
 
-  one_way_budget_fraction: float = 1.0
+  pgm_iters: int = 5000
+
+  def configure(self, *, zcdp_rho, delta=0.0, max_records_per_user=1):
+    return Independent(config=self)
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
-    """Returns the one-way marginals this mechanism will measure."""
+    """Returns the one-way marginals this mechanism expects to process."""
     return [(a,) for a in domain.attributes]
-
-  def _create_mechanism(self, **kwargs) -> 'Independent':
-    return Independent(**kwargs)
 
 
 @dataclasses.dataclass(frozen=True)
-class Independent(base.DiscreteMechanism):
+class Independent(api.CalibratedMechanism):
+  """Calibrated independent mechanism instance."""
+
   config: IndependentConfig
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
-    """Returns the DP event for the independent mechanism."""
-    return dp_accounting.GaussianDpEvent(
-        noise_multiplier=accounting.zcdp_gaussian_sigma(self.one_way_rho)  # pyrefly: ignore[bad-argument-type]
-    )
+    """Returns a zero-cost DP event (no new measurements)."""
+    return dp_accounting.NoOpDpEvent()
 
-  def _select(self, rng, data, measurements, phase_times):
-    return []
+  def __call__(
+      self,
+      rng: np.random.Generator,
+      data: mbi.Dataset | mbi.CliqueVector,
+      *,
+      initial_measurements: Sequence[mbi.LinearMeasurement] = (),
+      constraints: Sequence[mbi.Constraint] = (),
+  ) -> common.DiscreteMechanismResult:
+    """Estimates and generates from initial measurements."""
+    common.validate_initial_measurements(initial_measurements)
+    phase_times = {}
+
+    # Kick off async AOT compilation of the estimator
+    estimator = mbi.estimation.MirrorDescent(None)
+    measurements = list(initial_measurements)
+    with common.timed(phase_times, 'estimation'):
+      model = estimator.estimate(
+          data.domain,
+          measurements,
+          iters=self.config.pgm_iters,
+          callback_fn=mbi.callbacks.default(measurements, data.domain),
+          constraints=constraints,
+      )
+
+    synthetic_data = model.synthetic_data()
+    return common.DiscreteMechanismResult(
+        synthetic_data=synthetic_data,
+        measurements=measurements,
+        model=model,
+        diagnostics=common.clique_stats(model),
+    )

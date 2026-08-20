@@ -305,7 +305,7 @@ class DataGenerationV3Test(parameterized.TestCase):
   def test_discrete_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentConfig(pgm_iters=500)
+    baseline_config = IndependentConfig()
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -318,7 +318,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentConfig(pgm_iters=500)
+    baseline_config = IndependentConfig()
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -329,7 +329,7 @@ class DataGenerationV3Test(parameterized.TestCase):
   def test_mixed_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentConfig(pgm_iters=500)
+    baseline_config = IndependentConfig()
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -340,7 +340,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentConfig(pgm_iters=500)
+    baseline_config = IndependentConfig()
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -377,9 +377,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     config = TabularConfig(domains=self._categorical_domains())
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=k)
     self.assertEqual(calibrated.max_records_per_user, k)
-    self.assertEqual(
-        calibrated.calibrated_discrete_mechanism.max_records_per_user, k
-    )
+    self.assertEqual(calibrated.base_mechanism.max_records_per_user, k)
 
   def test_dp_event_invariant_to_k(self):
     config = TabularConfig(domains=self._categorical_domains())
@@ -410,7 +408,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     inits = data_generation_v3.create_initializers(domains, 32)
     config = TabularConfig(domains=domains, initializers=inits)
     calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=2)
-    for init in calibrated.calibrated_initializers.values():
+    for init in calibrated.initializers.values():
       self.assertEqual(init.max_records_per_user, 2)
 
   @parameterized.named_parameters(('zero', 0), ('negative', -3))
