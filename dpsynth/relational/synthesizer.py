@@ -333,7 +333,7 @@ def _encode_and_compress_tables(
 
 @dataclasses.dataclass(frozen=True)
 class PreprocessedTables:
-  """Engine-agnostic container for preprocessed relational tables from Phase 1.
+  """Engine-agnostic container for preprocessed relational tables.
 
   Attributes:
     compressed_datasets: Mapping from table name to discrete compressed
@@ -443,7 +443,7 @@ def _compute_table_col_deltas(
   Args:
     domains: Mapping from table names to per-column AttributeType schemas.
     delta: Total DP delta for partition selection thresholding.
-    init_budget_fraction: Fraction of delta allocated to Phase 1 initialization.
+    init_budget_fraction: Fraction of delta allocated to column initialization.
 
   Returns:
     A nested mapping from table name and column name to its allocated delta.
@@ -591,7 +591,7 @@ class SynthesizedLinkResult:
   unstacked_child_dataset: mbi.Dataset
   parent_row_indices: np.ndarray
   synth_parent_dataset: mbi.Dataset | None = None  # Needed for the root table.
-  discrete_mechanism_result: dm_common.DiscreteMechanismResult | None = None
+  discrete_mechanism_result: Any | None = None
 
 
 def _synthesize_relational_link(
@@ -668,7 +668,7 @@ def _synthesize_relational_link(
   else:
     exploration_constraints = ()
 
-  mech_res: dm_common.DiscreteMechanismResult = discrete_mechanism(
+  mech_res: Any = discrete_mechanism(
       rng=rng,
       data=exploration_dataset,
       constraints=exploration_constraints,
@@ -754,7 +754,7 @@ def _synthesize_relational_hierarchy(
 
   Args:
     mechanism: Calibrated MultiTableMechanism.
-    preprocessed: PreprocessedTables container from Phase 1.
+    preprocessed: PreprocessedTables container holding encoded data.
     hierarchy: Ordered topological synthesis levels.
     rng: NumPy random generator.
 
@@ -809,6 +809,106 @@ def _synthesize_relational_hierarchy(
       discrete_mechanism_results[link_name] = link_res.discrete_mechanism_result
 
   return synth_datasets, parent_mappings, discrete_mechanism_results
+
+
+def _decompress_synthetic_datasets(
+    synth_datasets: Mapping[str, mbi.Dataset],
+    compression_mappings: Mapping[str, Mapping[str, np.ndarray]],
+) -> dict[str, mbi.Dataset]:
+  """Probabilistically decompresses synthetic discrete datasets for each table.
+
+  Reverses domain category compression mappings by sampling original category
+  preimages uniformly from composite <Other> bins.
+
+  Args:
+    synth_datasets: Mapping from table name to synthesized mbi.Dataset.
+    compression_mappings: Mapping from table name to per-column compression
+      mapping arrays.
+
+  Returns:
+    A mapping from table name to decompressed mbi.Dataset.
+  """
+  decompressed: dict[str, mbi.Dataset] = {}
+  for table_name, dataset in synth_datasets.items():
+    mappings = compression_mappings.get(table_name, {})
+    if mappings:
+      raw_mappings = {str(col): arr for col, arr in mappings.items()}
+      decompressed[table_name] = dataset.decompress(raw_mappings)
+    else:
+      decompressed[table_name] = dataset
+  return decompressed
+
+
+def _decode_synthetic_tables(
+    decompressed_datasets: Mapping[str, mbi.Dataset],
+    column_codecs: Mapping[str, data_generation_v3.TabularCodec],
+    domains: Mapping[str, domain.Schema],
+    rng: np.random.Generator,
+) -> dict[str, pd.DataFrame]:
+  """Decodes decompressed discrete datasets into continuous/categorical DataFrames.
+
+  Converts discrete integer bucket tokens back to native strings and continuous
+  floats (uniformly dequantized within bucket intervals) per table schema.
+
+  Args:
+    decompressed_datasets: Mapping from table name to decompressed mbi.Dataset.
+    column_codecs: Mapping from table name to TabularCodec.
+    domains: Mapping from table name to per-column AttributeType schemas.
+    rng: NumPy random generator for uniform interval dequantization.
+
+  Returns:
+    A mapping from table name to decoded pandas DataFrame.
+  """
+  decoded_tables: dict[str, pd.DataFrame] = {}
+  for table_name, dataset in decompressed_datasets.items():
+    codec = column_codecs[table_name]
+    column_order = list(domains[table_name].keys())
+    decoded_tables[table_name] = codec.decode(
+        synthetic=dataset, rng=rng, column_order=column_order
+    )
+  return decoded_tables
+
+
+def _assign_relational_keys(
+    tables: Mapping[str, pd.DataFrame],
+    foreign_keys: Sequence[rel_domain.ForeignKeyRelation],
+    parent_mappings: Mapping[str, np.ndarray],
+    hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
+) -> dict[str, pd.DataFrame]:
+  """Assigns synthetic primary and foreign keys to link relational tables.
+
+  For each table in topological order, generates integer surrogate primary keys
+  (0..N-1) and assigns child foreign keys by indexing parent primary keys via
+  the parent-row mappings from copula matching and unstacking.
+
+  Args:
+    tables: Mapping from table name to decoded DataFrame.
+    foreign_keys: Sequence of foreign key relationships.
+    parent_mappings: Mapping from child table name to 1D int array of parent row
+      indices.
+    hierarchy: Ordered topological synthesis levels.
+
+  Returns:
+    A mapping from table name to DataFrame with assigned PK and FK columns.
+  """
+  linked_tables = {name: df.copy() for name, df in tables.items()}
+  primary_keys: dict[str, dict[str, np.ndarray]] = {}
+
+  for fk in foreign_keys:
+    if fk.parent_table not in primary_keys:
+      primary_keys[fk.parent_table] = {}
+    if fk.parent_primary_key not in primary_keys[fk.parent_table]:
+      pk_arr = np.arange(len(linked_tables[fk.parent_table]), dtype=np.int64)
+      primary_keys[fk.parent_table][fk.parent_primary_key] = pk_arr
+      linked_tables[fk.parent_table][fk.parent_primary_key] = pk_arr
+
+  for _, table_name, fk in hierarchy:
+    if fk is not None:
+      p_keys = primary_keys[fk.parent_table][fk.parent_primary_key]
+      parent_indices = parent_mappings[table_name]
+      linked_tables[table_name][fk.child_foreign_key] = p_keys[parent_indices]
+
+  return linked_tables
 
 
 @dataclasses.dataclass(frozen=True)
@@ -883,10 +983,64 @@ class MultiTableMechanism(api.CalibratedMechanism):
       rng: np.random.Generator,
       data: Mapping[str, pd.DataFrame],
   ) -> MultiDataGenerationResult:
-    """Generates synthetic multi-table relational data."""
-    del rng, data
-    raise NotImplementedError(
-        'MultiTableMechanism.__call__ is not yet implemented.'
+    """Generates differentially private synthetic multi-table relational data.
+
+    Executes the multi-table synthesis process across three steps:
+      1. Preprocessing: Weights children tables to guarantee sensitivity = 1 for
+         each parent record. Then individually for each table, discretizes
+         numerical columns into bins, encodes & compresses categories under DP.
+      2. Candidate Exploration: Explores set of candidate marginals from
+         permutations of children records and their parent, representing
+         cross-table correlations.
+      3. Relational Synthesis: Generates synthetic records top-down from root
+         parent to leaf child tables, fitting the MRF per parent->child pair
+         preserving the chosen cross-table marginal correlation marginals.
+      4. Output Decoding & Key Assignment: Converts synthetic tokens back to
+         original data types (continuous numbers & category strings) and assigns
+         matching primary and foreign keys to ensure referential integrity.
+
+    Args:
+      rng: NumPy random number generator.
+      data: Mapping from table name to input pandas DataFrame.
+
+    Returns:
+      A MultiDataGenerationResult containing synthetic DataFrames and
+      diagnostics.
+    """
+    preprocessed = _run_table_preprocessing(self, rng=rng, data=data)
+
+    hierarchy = rel_domain.topological_sort_hierarchy(
+        list(self.domains.keys()), self.foreign_keys
+    )
+    synth_datasets, parent_mappings, discrete_results = (
+        _synthesize_relational_hierarchy(
+            mechanism=self,
+            preprocessed=preprocessed,
+            hierarchy=hierarchy,
+            rng=rng,
+        )
+    )
+
+    decompressed = _decompress_synthetic_datasets(
+        synth_datasets=synth_datasets,
+        compression_mappings=preprocessed.compression_mappings,
+    )
+    decoded_tables = _decode_synthetic_tables(
+        decompressed_datasets=decompressed,
+        column_codecs=preprocessed.column_codecs,
+        domains=self.domains,
+        rng=rng,
+    )
+    final_tables = _assign_relational_keys(
+        tables=decoded_tables,
+        foreign_keys=self.foreign_keys,
+        parent_mappings=parent_mappings,
+        hierarchy=hierarchy,
+    )
+
+    return MultiDataGenerationResult(
+        synthetic_tables=final_tables,
+        discrete_mechanism_results=discrete_results,
     )
 
 
@@ -901,14 +1055,15 @@ class MultiTableConfig(api.MechanismConfig):
     discrete_mechanism: Discrete mechanism config (e.g. AIM, MST) for relational
       links.
     numerical_bins: Number of bins for numerical attribute discretization.
-    init_budget_fraction: Fraction of total zCDP budget allocated to Phase 1.
+    init_budget_fraction: Fraction of total privacy budget allocated to column
+      initialization.
     num_permutation_slots: Permutation exploration slot count (o), default 2.
     exploration_strategy: Exploration strategy ('empty_token' or 'size_sliced').
   """
 
   domains: Mapping[str, domain.Schema]
-  foreign_keys: Sequence[rel_domain.ForeignKeyRelation] = ()
-  discrete_mechanism: discrete_mechanisms.MechanismConfig = dataclasses.field(
+  foreign_keys: Sequence[rel_domain.ForeignKeyRelation]
+  discrete_mechanism: api.MechanismConfig = dataclasses.field(
       default_factory=discrete_mechanisms.AIMConfig
   )
   numerical_bins: int = 32
@@ -929,9 +1084,9 @@ class MultiTableConfig(api.MechanismConfig):
           'MultiTableConfig requires at least one foreign key relationship in'
           ' foreign_keys. For single-table synthesis, use TabularConfig.'
       )
-    if not 0.0 <= self.init_budget_fraction <= 1.0:
+    if not (0.0 < self.init_budget_fraction < 1.0):
       raise ValueError(
-          'init_budget_fraction must be in [0.0, 1.0], got'
+          'init_budget_fraction must be strictly in (0.0, 1.0), got'
           f' {self.init_budget_fraction}.'
       )
     if self.numerical_bins < 1:
@@ -947,6 +1102,97 @@ class MultiTableConfig(api.MechanismConfig):
       raise ValueError(
           f'Unsupported exploration_strategy {self.exploration_strategy!r}.'
       )
+    if not isinstance(self.discrete_mechanism, api.MechanismConfig):
+      raise ValueError(
+          'discrete_mechanism must be an instance of MechanismConfig, got'
+          f' {type(self.discrete_mechanism).__name__}.'
+      )
+
+    # 1. Validate table names, column names, and attribute types.
+    for table_name, schema in self.domains.items():
+      if '.' in table_name:
+        raise ValueError(
+            f"Table name {table_name!r} must not contain '.' characters."
+        )
+      if not schema:
+        raise ValueError(
+            f'Table {table_name!r} schema in domains cannot be empty.'
+        )
+      for col_name, attr in schema.items():
+        if '.' in col_name:
+          raise ValueError(
+              f"Table {table_name!r} column {col_name!r} must not contain '.'"
+              ' (reserved for wide relational slot prefixes).'
+          )
+        if col_name == 'group_size':
+          raise ValueError(
+              f"Table {table_name!r} column name 'group_size' is reserved for"
+              ' relational exploration.'
+          )
+        if col_name.startswith('slot_'):
+          raise ValueError(
+              f'Table {table_name!r} column {col_name!r} cannot start with'
+              " 'slot_' (reserved for permutation slots)."
+          )
+        if not isinstance(
+            attr,
+            (
+                domain.NumericalAttribute,
+                domain.CategoricalAttribute,
+                domain.OpenSetCategoricalAttribute,
+            ),
+        ):
+          raise ValueError(
+              f'Table {table_name!r} column {col_name!r} has unsupported'
+              f' attribute type {type(attr).__name__}.'
+          )
+
+    # 2. Validate DAG hierarchy (acyclicity, known tables,
+    # in-degree <= 1, single root).
+    hierarchy = rel_domain.topological_sort_hierarchy(
+        list(self.domains.keys()), self.foreign_keys
+    )
+    roots = [t for _, t, fk in hierarchy if fk is None]
+    if len(roots) > 1:
+      raise ValueError(
+          'MultiTableConfig expects a single root table, but found'
+          f' {len(roots)}: {roots}. All tables must be connected in a single'
+          ' tree hierarchy.'
+      )
+
+    # 3. Ensure PK and FK columns are not present in domain schemas.
+    for fk in self.foreign_keys:
+      if fk.parent_primary_key in self.domains[fk.parent_table]:
+        raise ValueError(
+            f'Primary key column {fk.parent_primary_key!r} of table'
+            f' {fk.parent_table!r} must not be in domains[{fk.parent_table!r}].'
+        )
+      if fk.child_foreign_key in self.domains[fk.child_table]:
+        raise ValueError(
+            f'Foreign key column {fk.child_foreign_key!r} of table'
+            f' {fk.child_table!r} must not be in domains[{fk.child_table!r}].'
+        )
+
+    # 4. Validate custom initializers structure if provided.
+    if self.initializers is not None:
+      if set(self.initializers.keys()) != set(self.domains.keys()):
+        raise ValueError(
+            f'Custom initializers tables {set(self.initializers.keys())} do not'
+            f' match domains tables {set(self.domains.keys())}.'
+        )
+      for table_name, table_inits in self.initializers.items():
+        if set(table_inits.keys()) != set(self.domains[table_name].keys()):
+          raise ValueError(
+              f'Custom initializers for table {table_name!r}'
+              f' columns {set(table_inits.keys())} do not match'
+              f' domains columns {set(self.domains[table_name].keys())}.'
+          )
+        for col_name, init_cfg in table_inits.items():
+          if not isinstance(init_cfg, api.MechanismConfig):
+            raise ValueError(
+                f'Custom initializer for {table_name}.{col_name} must be an'
+                f' api.MechanismConfig, got {type(init_cfg).__name__}.'
+            )
 
   def configure(
       self,
@@ -955,7 +1201,7 @@ class MultiTableConfig(api.MechanismConfig):
       delta: float = 0.0,
       max_records_per_user: int = 1,
   ) -> MultiTableMechanism:
-    """Configures privacy budgets across Phase 1 initializers and Phase 2 links.
+    """Configures privacy budgets across column initializers and relational links.
 
     Formal Guarantees:
       - Additive zCDP Partitioning: The total zCDP budget zcdp_rho is

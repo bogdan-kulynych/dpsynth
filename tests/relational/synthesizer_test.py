@@ -15,6 +15,7 @@
 """Unit tests for dpsynth.relational.synthesizer."""
 
 import math
+import unittest.mock
 from absl.testing import absltest
 import dp_accounting
 from dpsynth import api
@@ -382,14 +383,24 @@ class SynthesizerTest(absltest.TestCase):
       with self.assertRaisesRegex(ValueError, 'zcdp_rho must be positive'):
         config.configure(zcdp_rho=-0.1)
 
-    with self.subTest('invalid_init_budget_fraction'):
+    with self.subTest('invalid_init_budget_fraction_above_one'):
       with self.assertRaisesRegex(
-          ValueError, 'init_budget_fraction must be in'
+          ValueError, 'init_budget_fraction must be strictly in'
       ):
         synthesizer.MultiTableConfig(
             domains=domains,
             foreign_keys=foreign_keys,
             init_budget_fraction=1.5,
+        )
+
+    with self.subTest('invalid_init_budget_fraction_zero'):
+      with self.assertRaisesRegex(
+          ValueError, 'init_budget_fraction must be strictly in'
+      ):
+        synthesizer.MultiTableConfig(
+            domains=domains,
+            foreign_keys=foreign_keys,
+            init_budget_fraction=0.0,
         )
 
     with self.subTest('invalid_numerical_bins'):
@@ -418,6 +429,146 @@ class SynthesizerTest(absltest.TestCase):
             domains=domains,
             foreign_keys=foreign_keys,
             exploration_strategy='unsupported_strategy',
+        )
+
+    with self.subTest('invalid_discrete_mechanism'):
+      with self.assertRaisesRegex(
+          ValueError,
+          'discrete_mechanism must be an instance of MechanismConfig',
+      ):
+        synthesizer.MultiTableConfig(
+            domains=domains,
+            foreign_keys=foreign_keys,
+            discrete_mechanism='not_a_config',  # pyrefly: ignore[bad-argument-type]
+        )
+
+    with self.subTest('dot_in_table_name'):
+      with self.assertRaisesRegex(ValueError, "must not contain '.'"):
+        synthesizer.MultiTableConfig(
+            domains={
+                'House.hold': {'income': domain.NumericalAttribute(0, 100)},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=[
+                rel_domain.ForeignKeyRelation(
+                    parent_table='House.hold',
+                    parent_primary_key='hid',
+                    child_table='Person',
+                    child_foreign_key='hid',
+                    max_children_per_parent=2,
+                )
+            ],
+        )
+
+    with self.subTest('dot_in_column_name'):
+      with self.assertRaisesRegex(ValueError, "must not contain '.'"):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'inc.ome': domain.NumericalAttribute(0, 100)},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('reserved_column_name_group_size'):
+      with self.assertRaisesRegex(
+          ValueError, 'reserved for relational exploration'
+      ):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'group_size': domain.NumericalAttribute(0, 100)},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('reserved_column_name_slot_prefix'):
+      with self.assertRaisesRegex(ValueError, 'reserved for permutation slots'):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'slot_1': domain.NumericalAttribute(0, 100)},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('empty_table_schema'):
+      with self.assertRaisesRegex(
+          ValueError, 'schema in domains cannot be empty'
+      ):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('unsupported_attribute_type'):
+      with self.assertRaisesRegex(ValueError, 'unsupported attribute type'):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'text': domain.FreeFormTextAttribute()},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('multi_root_forest_raises'):
+      with self.assertRaisesRegex(ValueError, 'expects a single root table'):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'income': domain.NumericalAttribute(0, 100)},
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+                'Unlinked': {'type': domain.CategoricalAttribute(['A', 'B'])},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('pk_in_domain_schema_raises'):
+      with self.assertRaisesRegex(ValueError, 'must not be in domains'):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {
+                    'income': domain.NumericalAttribute(0, 100),
+                    'hid': domain.CategoricalAttribute(['H1', 'H2']),
+                },
+                'Person': {'age': domain.NumericalAttribute(0, 100)},
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('fk_in_domain_schema_raises'):
+      with self.assertRaisesRegex(ValueError, 'must not be in domains'):
+        synthesizer.MultiTableConfig(
+            domains={
+                'Household': {'income': domain.NumericalAttribute(0, 100)},
+                'Person': {
+                    'age': domain.NumericalAttribute(0, 100),
+                    'hid': domain.CategoricalAttribute(['H1', 'H2']),
+                },
+            },
+            foreign_keys=foreign_keys,
+        )
+
+    with self.subTest('custom_initializers_mismatched_tables'):
+      with self.assertRaisesRegex(ValueError, 'do not match domains tables'):
+        synthesizer.MultiTableConfig(
+            domains=domains,
+            foreign_keys=foreign_keys,
+            initializers={'Household': {}},
+        )
+
+    with self.subTest('custom_initializers_mismatched_columns'):
+      mock_cfg = unittest.mock.MagicMock(spec=api.MechanismConfig)
+      with self.assertRaisesRegex(ValueError, 'do not match domains columns'):
+        synthesizer.MultiTableConfig(
+            domains=domains,
+            foreign_keys=foreign_keys,
+            initializers={
+                'Household': {'wrong_col': mock_cfg},
+                'Person': {'age': mock_cfg},
+            },
         )
 
   def test_validate_input_table_columns_success(self):
@@ -1199,6 +1350,373 @@ class SynthesizerTest(absltest.TestCase):
       )
     self.assertIn('Household->Person', discrete_results)
     self.assertIn('Household->Vehicle', discrete_results)
+
+  def test_decompress_synthetic_datasets(self):
+    # Table 1: compressed domain (original size 4, compressed to size 2
+    # via [0, 0, 1, 1])
+    orig_dom_h = mbi.Domain(('region',), (4,))
+    comp_dom_h = mbi.Domain(('region',), (2,))
+    comp_ds_h = mbi.Dataset({'region': np.array([0, 1, 0, 1])}, comp_dom_h)
+
+    # Table 2: uncompressed domain
+    dom_p = mbi.Domain(('age',), (5,))
+    ds_p = mbi.Dataset({'age': np.array([0, 2, 4])}, dom_p)
+
+    synth_datasets = {'Household': comp_ds_h, 'Person': ds_p}
+    compression_mappings = {
+        'Household': {'region': np.array([0, 0, 1, 1], dtype=np.int64)},
+        'Person': {},
+    }
+
+    decompressed = synthesizer._decompress_synthetic_datasets(
+        synth_datasets, compression_mappings
+    )
+
+    self.assertIn('Household', decompressed)
+    self.assertIn('Person', decompressed)
+    # Household should have restored original domain
+    self.assertEqual(decompressed['Household'].domain, orig_dom_h)
+    self.assertEqual(decompressed['Household'].records, 4)
+    # Values mapped from 0 should be in {0, 1}, and from 1 should be in {2, 3}
+    h_vals = decompressed['Household'].data['region']
+    self.assertIn(h_vals[0], (0, 1))
+    self.assertIn(h_vals[1], (2, 3))
+    self.assertIn(h_vals[2], (0, 1))
+    self.assertIn(h_vals[3], (2, 3))
+    # Person should be unchanged
+    self.assertEqual(decompressed['Person'].domain['age'], 5)
+    np.testing.assert_array_equal(
+        decompressed['Person'].data['age'], np.array([0, 2, 4])
+    )
+
+  def test_decode_synthetic_tables(self):
+    rng = np.random.default_rng(42)
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(min_value=0.0, max_value=100.0),
+            'region': domain.CategoricalAttribute(
+                possible_values=['Urban', 'Rural']
+            ),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(min_value=0, max_value=100),
+            'gender': domain.CategoricalAttribute(possible_values=['M', 'F']),
+        },
+    }
+    # Mock column measurements for initializers
+    h_measurements = {
+        'income': initialization.ColumnMeasurement(
+            categorical_attribute=domain.CategoricalAttribute(
+                possible_values=['[0.0, 50.0)', '[50.0, 100.0]']
+            ),
+            bin_edges=np.array([50.0]),
+        ),
+        'region': initialization.ColumnMeasurement(
+            categorical_attribute=domain.CategoricalAttribute(
+                possible_values=['Urban', 'Rural']
+            ),
+        ),
+    }
+    p_measurements = {
+        'age': initialization.ColumnMeasurement(
+            categorical_attribute=domain.CategoricalAttribute(
+                possible_values=['[0, 50)', '[50, 100]']
+            ),
+            bin_edges=np.array([50.0]),
+        ),
+        'gender': initialization.ColumnMeasurement(
+            categorical_attribute=domain.CategoricalAttribute(
+                possible_values=['M', 'F']
+            ),
+        ),
+    }
+    codecs = {
+        'Household': (
+            synthesizer.data_generation_v3.TabularCodec.from_measurements(
+                h_measurements, domains['Household']
+            )
+        ),
+        'Person': synthesizer.data_generation_v3.TabularCodec.from_measurements(
+            p_measurements, domains['Person']
+        ),
+    }
+    decompressed_datasets = {
+        'Household': mbi.Dataset(
+            {'income': np.array([0, 1]), 'region': np.array([0, 1])},
+            codecs['Household'].mbi_domain,
+        ),
+        'Person': mbi.Dataset(
+            {
+                'age': np.array([0, 1, 0]),
+                'gender': np.array([1, 0, 1]),
+            },
+            codecs['Person'].mbi_domain,
+        ),
+    }
+
+    decoded_tables = synthesizer._decode_synthetic_tables(
+        decompressed_datasets=decompressed_datasets,
+        column_codecs=codecs,
+        domains=domains,
+        rng=rng,
+    )
+
+    self.assertIn('Household', decoded_tables)
+    self.assertIn('Person', decoded_tables)
+    h_df = decoded_tables['Household']
+    p_df = decoded_tables['Person']
+    self.assertEqual(list(h_df.columns), ['income', 'region'])
+    self.assertEqual(list(p_df.columns), ['age', 'gender'])
+    self.assertLen(h_df, 2)
+    self.assertLen(p_df, 3)
+    # Check numerical dequantization bounds
+    self.assertTrue(np.all((h_df['income'] >= 0.0) & (h_df['income'] <= 100.0)))
+    self.assertTrue(np.all((p_df['age'] >= 0) & (p_df['age'] <= 100)))
+    # Check categorical decoding strings
+    self.assertEqual(list(h_df['region']), ['Urban', 'Rural'])
+    self.assertEqual(list(p_df['gender']), ['F', 'M', 'F'])
+
+  def test_assign_relational_keys_3_tier(self):
+    tables = {
+        'Household': pd.DataFrame({'income': [50.0, 80.0]}),
+        'Person': pd.DataFrame({'age': [25, 30, 45]}),
+        'Activity': pd.DataFrame({'amt': [10.0, 20.0, 30.0, 40.0]}),
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+        rel_domain.ForeignKeyRelation(
+            parent_table='Person',
+            parent_primary_key='pid',
+            child_table='Activity',
+            child_foreign_key='pid',
+            max_children_per_parent=2,
+        ),
+    ]
+    parent_mappings = {
+        'Person': np.array([0, 0, 1], dtype=np.int64),
+        'Activity': np.array([0, 1, 1, 2], dtype=np.int64),
+    }
+    hierarchy = [
+        (0, 'Household', None),
+        (1, 'Person', fks[0]),
+        (2, 'Activity', fks[1]),
+    ]
+
+    linked = synthesizer._assign_relational_keys(
+        tables=tables,
+        foreign_keys=fks,
+        parent_mappings=parent_mappings,
+        hierarchy=hierarchy,
+    )
+
+    self.assertIn('hid', linked['Household'].columns)
+    np.testing.assert_array_equal(linked['Household']['hid'], np.array([0, 1]))
+
+    self.assertIn('hid', linked['Person'].columns)
+    self.assertIn('pid', linked['Person'].columns)
+    np.testing.assert_array_equal(linked['Person']['hid'], np.array([0, 0, 1]))
+    np.testing.assert_array_equal(linked['Person']['pid'], np.array([0, 1, 2]))
+
+    self.assertIn('pid', linked['Activity'].columns)
+    np.testing.assert_array_equal(
+        linked['Activity']['pid'], np.array([0, 1, 1, 2])
+    )
+
+  def test_assign_relational_keys_branching_and_empty_child(self):
+    tables = {
+        'Household': pd.DataFrame({'income': [50.0, 80.0]}),
+        'Person': pd.DataFrame({'age': [25, 30]}),
+        'Vehicle': pd.DataFrame({'type': []}),
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Vehicle',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        ),
+    ]
+    parent_mappings = {
+        'Person': np.array([0, 1], dtype=np.int64),
+        'Vehicle': np.empty(0, dtype=np.int64),
+    }
+    hierarchy = [
+        (0, 'Household', None),
+        (1, 'Person', fks[0]),
+        (1, 'Vehicle', fks[1]),
+    ]
+
+    linked = synthesizer._assign_relational_keys(
+        tables=tables,
+        foreign_keys=fks,
+        parent_mappings=parent_mappings,
+        hierarchy=hierarchy,
+    )
+
+    np.testing.assert_array_equal(linked['Household']['hid'], np.array([0, 1]))
+    np.testing.assert_array_equal(linked['Person']['hid'], np.array([0, 1]))
+    self.assertEmpty(linked['Vehicle'])
+    self.assertIn('hid', linked['Vehicle'].columns)
+    self.assertEmpty(linked['Vehicle']['hid'])
+
+  def test_multi_table_mechanism_call_end_to_end(self):
+    rng = np.random.default_rng(42)
+    h_df = pd.DataFrame({
+        'hid': [0, 1, 2, 3],
+        'income': [20.0, 50.0, 80.0, 100.0],
+        'region': ['Urban', 'Rural', 'Urban', 'Rural'],
+    })
+    p_df = pd.DataFrame({
+        'hid': [0, 0, 1, 2, 2, 3],
+        'pid': [10, 11, 12, 13, 14, 15],
+        'age': [15, 45, 30, 20, 55, 60],
+        'gender': ['M', 'F', 'M', 'F', 'M', 'F'],
+    })
+    data = {'Household': h_df, 'Person': p_df}
+
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(min_value=0.0, max_value=100.0),
+            'region': domain.CategoricalAttribute(
+                possible_values=['Urban', 'Rural']
+            ),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(min_value=0, max_value=100),
+            'gender': domain.CategoricalAttribute(possible_values=['M', 'F']),
+        },
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        )
+    ]
+
+    cfg = synthesizer.MultiTableConfig(
+        domains=domains,
+        foreign_keys=fks,
+        discrete_mechanism=discrete_mechanisms.AIMConfig(
+            max_rounds=2,
+            pgm_iters=50,
+        ),
+        numerical_bins=4,
+        init_budget_fraction=0.2,
+    )
+    mechanism = cfg.configure(
+        zcdp_rho=1.0,
+    )
+
+    result = mechanism(rng=rng, data=data)
+
+    self.assertIsInstance(result, synthesizer.MultiDataGenerationResult)
+    self.assertIn('Household', result.synthetic_tables)
+    self.assertIn('Person', result.synthetic_tables)
+
+    synth_h = result.synthetic_tables['Household']
+    synth_p = result.synthetic_tables['Person']
+
+    # Referential integrity check
+    self.assertIn('hid', synth_h.columns)
+    self.assertIn('hid', synth_p.columns)
+    self.assertTrue(set(synth_p['hid']).issubset(set(synth_h['hid'])))
+
+    # Column existence and bounds
+    self.assertIn('income', synth_h.columns)
+    self.assertIn('region', synth_h.columns)
+    self.assertIn('age', synth_p.columns)
+    self.assertIn('gender', synth_p.columns)
+
+    self.assertTrue(
+        np.all((synth_h['income'] >= 0.0) & (synth_h['income'] <= 100.0))
+    )
+    self.assertTrue(np.all((synth_p['age'] >= 0) & (synth_p['age'] <= 100)))
+    self.assertTrue(set(synth_h['region']).issubset({'Urban', 'Rural'}))
+    self.assertTrue(set(synth_p['gender']).issubset({'M', 'F'}))
+    self.assertIn('Household->Person', result.discrete_mechanism_results)
+
+  def test_multi_table_mechanism_call_size_sliced(self):
+    rng = np.random.default_rng(42)
+    h_df = pd.DataFrame({
+        'hid': [0, 1, 2, 3],
+        'income': [20.0, 50.0, 80.0, 100.0],
+        'region': ['Urban', 'Rural', 'Urban', 'Rural'],
+    })
+    p_df = pd.DataFrame({
+        'hid': [0, 0, 1, 2, 2, 3],
+        'pid': [10, 11, 12, 13, 14, 15],
+        'age': [15, 45, 30, 20, 55, 60],
+        'gender': ['M', 'F', 'M', 'F', 'M', 'F'],
+    })
+    data = {'Household': h_df, 'Person': p_df}
+
+    domains = {
+        'Household': {
+            'income': domain.NumericalAttribute(min_value=0.0, max_value=100.0),
+            'region': domain.CategoricalAttribute(
+                possible_values=['Urban', 'Rural']
+            ),
+        },
+        'Person': {
+            'age': domain.NumericalAttribute(min_value=0, max_value=100),
+            'gender': domain.CategoricalAttribute(possible_values=['M', 'F']),
+        },
+    }
+    fks = [
+        rel_domain.ForeignKeyRelation(
+            parent_table='Household',
+            parent_primary_key='hid',
+            child_table='Person',
+            child_foreign_key='hid',
+            max_children_per_parent=2,
+        )
+    ]
+
+    cfg = synthesizer.MultiTableConfig(
+        domains=domains,
+        foreign_keys=fks,
+        discrete_mechanism=discrete_mechanisms.AIMConfig(
+            max_rounds=2,
+            pgm_iters=50,
+        ),
+        numerical_bins=4,
+        init_budget_fraction=0.2,
+        exploration_strategy='size_sliced',
+    )
+    mechanism = cfg.configure(
+        zcdp_rho=1.0,
+    )
+
+    result = mechanism(rng=rng, data=data)
+
+    self.assertIsInstance(result, synthesizer.MultiDataGenerationResult)
+    self.assertIn('Household', result.synthetic_tables)
+    self.assertIn('Person', result.synthetic_tables)
+
+    synth_h = result.synthetic_tables['Household']
+    synth_p = result.synthetic_tables['Person']
+
+    self.assertIn('hid', synth_h.columns)
+    self.assertIn('hid', synth_p.columns)
+    self.assertTrue(set(synth_p['hid']).issubset(set(synth_h['hid'])))
+    self.assertIn('Household->Person', result.discrete_mechanism_results)
 
 
 if __name__ == '__main__':
