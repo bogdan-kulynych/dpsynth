@@ -17,9 +17,6 @@
 # pylint: disable=g-importing-member
 
 from dpsynth.relational.domain import ForeignKeyRelation
-from dpsynth.relational.domain import from_dict
-from dpsynth.relational.domain import from_yaml_file
-from dpsynth.relational.domain import topological_sort_hierarchy
 from dpsynth.relational.synthesizer import MultiDataGenerationResult
 from dpsynth.relational.synthesizer import MultiTableConfig
 from dpsynth.relational.synthesizer import MultiTableMechanism
@@ -29,7 +26,4 @@ __all__ = [
     'MultiDataGenerationResult',
     'MultiTableConfig',
     'MultiTableMechanism',
-    'from_dict',
-    'from_yaml_file',
-    'topological_sort_hierarchy',
 ]

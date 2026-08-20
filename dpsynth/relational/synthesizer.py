@@ -675,11 +675,11 @@ def _synthesize_relational_link(
   )
   assert hasattr(mech_res, 'measurements')
 
-  wide_measurements = post_processing.symmetrize_to_wide_domain(
-      measurements=mech_res.measurements,
-      max_children_per_parent=fk_relation.max_children_per_parent,
-      num_permutation_slots=num_permutation_slots,
-  )
+  # wide_measurements = post_processing.symmetrize_to_wide_domain(
+  #    measurements=mech_res.measurements,
+  #    max_children_per_parent=fk_relation.max_children_per_parent,
+  #    num_permutation_slots=num_permutation_slots,
+  # )
 
   wide_domain = transformations.build_exploration_domain(
       parent_domain=parent_dataset.domain,
@@ -703,11 +703,16 @@ def _synthesize_relational_link(
       else max(1, int(round(noisy_root_total)))
   )
 
+  pgm_iters = getattr(
+      getattr(discrete_mechanism, 'config', None), 'pgm_iters', 5000
+  )
+
   synth_wide_records = _fit_and_sample_wide_link_mrf(
       wide_domain=wide_domain,
-      wide_measurements=wide_measurements,
+      wide_measurements=mech_res.measurements,  # wide_measurements
       wide_constraints=wide_constraints,
       num_rows=num_rows,
+      iters=pgm_iters,
   )
 
   synth_parent_dataset: mbi.Dataset | None = None

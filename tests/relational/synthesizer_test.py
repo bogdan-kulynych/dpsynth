@@ -16,11 +16,13 @@
 
 import math
 import unittest.mock
+
 from absl.testing import absltest
 import dp_accounting
 from dpsynth import api
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
+from dpsynth import relational as rel_pkg
 from dpsynth.local_mode import initialization
 from dpsynth.relational import domain as rel_domain
 from dpsynth.relational import post_processing
@@ -1717,6 +1719,14 @@ class SynthesizerTest(absltest.TestCase):
     self.assertIn('hid', synth_p.columns)
     self.assertTrue(set(synth_p['hid']).issubset(set(synth_h['hid'])))
     self.assertIn('Household->Person', result.discrete_mechanism_results)
+
+  def test_public_api_exports(self):
+    self.assertIs(rel_pkg.MultiTableConfig, synthesizer.MultiTableConfig)
+    self.assertIs(rel_pkg.MultiTableMechanism, synthesizer.MultiTableMechanism)
+    self.assertIs(
+        rel_pkg.MultiDataGenerationResult, synthesizer.MultiDataGenerationResult
+    )
+    self.assertIs(rel_pkg.ForeignKeyRelation, rel_domain.ForeignKeyRelation)
 
 
 if __name__ == '__main__':
