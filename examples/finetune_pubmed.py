@@ -38,7 +38,9 @@ from dpsynth.text import model
 from etils import epath
 from gemma import gm
 from gemma import peft
+import jax
 from jax_privacy import execution_plan
+from kauldron import kd
 import optax
 
 _MODEL = flags.DEFINE_enum(
@@ -75,8 +77,12 @@ _LEARNING_RATE = flags.DEFINE_float(
     'learning_rate', 1e-4, 'AdamW learning rate.'
 )
 _NUM_SAMPLES = flags.DEFINE_integer('num_samples', 64, 'Abstracts to generate.')
-_MAX_OUT_LENGTH = flags.DEFINE_integer(
-    'max_out_length', 512, 'Max output tokens.'
+_SAMPLE_BATCH_SIZE = flags.DEFINE_integer(
+    'sample_batch_size',
+    32,
+    'Batch size for sampling across devices; must be divisible by the number of'
+    ' available devices.',
+    lower_bound=1,
 )
 _TEMPERATURE = flags.DEFINE_float('temperature', 1.0, 'Sampling temperature.')
 _SEED = flags.DEFINE_integer(
@@ -145,32 +151,38 @@ def load_finetuned() -> dp_sft.FineTuneResult:
   Returns:
     A FineTuneResult holding the reconstructed model and loaded params.
   """
-  module, frozen, trainable = model.load_gemma(
+  module, base_params, lora_params = model.load_gemma(
       _model_variant(),
       model.LoraConfig(rank=_LORA_RANK.value),
-      seq_length=_MAX_SEQ_LENGTH.value,
+      checkpoint_path=_ckpt_dir(),
+      sharding=kd.sharding.FSDPSharding(),
   )
-  template = peft.merge_params(frozen, trainable)
-  params = gm.ckpts.load_params(_ckpt_dir(), params=template)
-  return dp_sft.FineTuneResult(model=module, params=params)
+  return dp_sft.FineTuneResult(
+      model=module,
+      params=peft.merge_params(base_params, lora_params),
+  )
 
 
 def sample(result: dp_sft.FineTuneResult) -> None:
   """Generates synthetic abstracts and writes them to <workdir> as JSONL."""
-  sampler = gm.text.ChatSampler(
+  sampler = model.GemmaSampler(
       model=result.model,
-      params=typing.cast(typing.Mapping[str, typing.Any], result.params),
-      max_out_length=_MAX_OUT_LENGTH.value,
-      sampling=gm.text.RandomSampling(temperature=_TEMPERATURE.value),
+      params=result.params,
+      max_seq_length=_MAX_SEQ_LENGTH.value,
+      temperature=_TEMPERATURE.value,
   )
+  prompts = [_INSTRUCTION] * _NUM_SAMPLES.value
+  responses = sampler(
+      prompts,
+      rng=_SEED.value,
+      batch_size=_SAMPLE_BATCH_SIZE.value,
+  )
+
   out_path = epath.Path(_WORKDIR.value) / 'synthetic_abstracts.jsonl'
   with out_path.open('w') as f:
-    # One abstract per call is simple but slow. For higher throughput, pass a
-    # *list* to the batched sampler (`sampler.sampler.sample` for Gemma 3,
-    # `sampler.gemma4_sampler.sample` for Gemma 4); chunk it to fit HBM.
-    for i in range(_NUM_SAMPLES.value):
-      abstract = sampler.chat(_INSTRUCTION, rng=_SEED.value + i)
-      logging.info('Synthetic abstract %d:\n%s', i + 1, abstract)
+    for i, abstract in enumerate(responses):
+      if i % _SAMPLE_BATCH_SIZE.value == 0:
+        logging.info('Synthetic abstract %d:\n%s', i + 1, abstract)
       f.write(json.dumps({'abstract': abstract}) + '\n')
   logging.info('Wrote %d abstracts to %s.', _NUM_SAMPLES.value, out_path)
 
@@ -198,6 +210,11 @@ def main(_) -> None:
     result = load_finetuned()
 
   if _SAMPLE.value:
+    if _SAMPLE_BATCH_SIZE.value % len(jax.devices()) != 0:
+      raise app.UsageError(
+          f'--sample_batch_size ({_SAMPLE_BATCH_SIZE.value}) must be divisible'
+          f' by the number of available devices ({len(jax.devices())}).'
+      )
     sample(result)
 
 

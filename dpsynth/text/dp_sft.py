@@ -60,11 +60,11 @@ class FineTuneResult:
   excluded.
 
   Attributes:
-    model: The model architecture (LoRA-wrapped, with adapters folded in).
-    params: Pretrained + trained LoRA params, merged and ready for sampling.
+    model: The LoRA-wrapped model architecture.
+    params: Pretrained and trained LoRA parameters merged into a single tree.
   """
 
-  model: gm.nn.TransformerLike
+  model: gm.nn.LoRA
   params: training.Params
 
 
@@ -153,7 +153,6 @@ class DPFineTuner(api.DPMechanism):
     module, frozen_params, trainable_params = model.load_gemma(
         self.model_variant,
         lora_config,
-        seq_length=self.max_seq_length,
     )
 
     def loss_fn(trainable_params, batch, prng):
