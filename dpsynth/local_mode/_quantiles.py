@@ -133,7 +133,7 @@ def quantiles_from_histogram(
   probas = np.full(offsets.size, 1.0 / offsets.size)
   split = rng.multinomial(counts[nz].astype(np.int64), probas)
   targets = np.clip(nz[:, None] * stride + offsets, 0, num_cells - 1)
-  jittered = np.bincount(
+  jittered = np.bincount(  # pyrefly: ignore[no-matching-overload]
       targets.flatten(), weights=split.flatten(), minlength=num_cells
   )
 
