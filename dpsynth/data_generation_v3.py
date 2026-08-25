@@ -415,7 +415,8 @@ class TabularConfig(api.MechanismConfig):
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)
-    discrete_rho = zcdp_rho - init_rho
+    discrete_rho = (1 - self.init_budget_fraction) * zcdp_rho
+    total_count_sigma = (0.5 / per_col_rho) ** 0.5
 
     calibrated_inits: dict[str, api.CalibratedMechanism]
 
@@ -427,7 +428,6 @@ class TabularConfig(api.MechanismConfig):
         )
         for col, init in inits.items()
     }
-    total_count_sigma = (0.5 / per_col_rho) ** 0.5
 
     calibrated_discrete = self.discrete_mechanism.configure(
         max_records_per_user=max_records_per_user,

@@ -447,6 +447,16 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
           poisson_sampling_prob=0.1,
       )
 
+  def test_configure_infinite_zcdp_rho(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
+        'B': domain.NumericalAttribute(min_value=0, max_value=10),
+    }
+    config = TabularConfig(domains=domains)
+    mechanism = config.configure(zcdp_rho=np.inf)
+    self.assertIsNotNone(mechanism)
+    self.assertEqual(mechanism.total_count_sigma, 0.0)
+
 
 if __name__ == '__main__':
   absltest.main()
