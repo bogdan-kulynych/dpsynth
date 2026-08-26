@@ -214,16 +214,6 @@ class DataGenerationV3Test(parameterized.TestCase):
     calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
     self.assertIsInstance(calibrated.dp_event, dp_accounting.ComposedDpEvent)
 
-  def test_calibrate_raises_on_conflicting_params(self):
-    domains = {
-        'A': domain.CategoricalAttribute(
-            possible_values=['a', 'b', 'c'], out_of_domain_index=0
-        ),
-    }
-    v3 = TabularConfig(domains=domains)
-    with self.assertRaises(Exception):
-      v3.calibrate(zcdp_rho=1.0, epsilon=1.0, delta=1e-5)
-
   def test_calibrate_small_epsilon(self):
     domains = {
         'A': domain.CategoricalAttribute(

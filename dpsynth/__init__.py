@@ -15,7 +15,7 @@
 """Public API for DPSynth."""
 
 # pylint: disable=g-importing-member
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 from dpsynth import api
 from dpsynth import constraints
 from dpsynth import discrete_mechanisms

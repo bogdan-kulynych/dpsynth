@@ -37,7 +37,6 @@ import abc
 from collections.abc import Callable
 import functools
 from typing import Any
-import warnings
 
 import dp_accounting
 
@@ -204,9 +203,8 @@ class MechanismConfig(abc.ABC):
   def calibrate(
       self,
       *,
-      epsilon: float | None = None,
-      delta: float | None = None,
-      zcdp_rho: float | None = None,
+      epsilon: float,
+      delta: float,
       poisson_sampling_prob: float = 1.0,
       max_records_per_user: int = 1,
   ) -> CalibratedMechanism:
@@ -216,17 +214,12 @@ class MechanismConfig(abc.ABC):
     candidate and inspecting the resulting ``dp_event``. Tries both RDP and
     PLD accounting and picks whichever gives the tightest result.
 
-    .. deprecated::
-      Passing ``zcdp_rho`` to ``calibrate`` is deprecated. Use
-      ``configure(zcdp_rho=...)`` directly instead.
-
     Args:
       epsilon: Target epsilon for (epsilon, delta)-DP.
       delta: Target delta for (epsilon, delta)-DP.
-      zcdp_rho: Deprecated. Direct zCDP budget. Use ``configure()`` instead.
       poisson_sampling_prob: If specified, calibrate the mechanism assuming the
-        input data is subsampleed with the given probability. The actual
-        sampling is **NOT** handled internally by the calibrated mechanism.
+        input data is subsampled with the given probability. The actual sampling
+        is **NOT** handled internally by the calibrated mechanism.
       max_records_per_user: Assumed upper bound on the number of records a
         single user contributes. Added noise (and mechanism sensitivity) is
         scaled by this factor to provide user-level rather than record-level DP;
@@ -235,29 +228,7 @@ class MechanismConfig(abc.ABC):
 
     Returns:
       A calibrated, runnable mechanism.
-
-    Raises:
-      ValueError: If neither (epsilon, delta) nor zcdp_rho is specified, or
-        if both are specified simultaneously.
     """
-    if zcdp_rho is not None:
-      if epsilon is not None or delta is not None:
-        raise ValueError(
-            'Specify either zcdp_rho or (epsilon, delta), not both.'
-        )
-      warnings.warn(
-          'Passing zcdp_rho to calibrate() is deprecated. Use'
-          ' configure(zcdp_rho=...) directly instead.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-      return self.configure(
-          zcdp_rho=zcdp_rho,
-          max_records_per_user=max_records_per_user,
-      )
-
-    if epsilon is None or delta is None:
-      raise ValueError('Must specify both epsilon and delta, or zcdp_rho.')
 
     def make_event_fn(rho: float) -> dp_accounting.DpEvent:
       base = self.configure(

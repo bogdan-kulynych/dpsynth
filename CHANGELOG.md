@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-26
+
+### Removed
+
+-   **Breaking**: Removed deprecated `zcdp_rho` argument from
+    `MechanismConfig.calibrate()`. Use `MechanismConfig.configure(zcdp_rho=...)`
+    directly instead.
+-   **Breaking**: Removed deprecated `dpsynth.data_generation_v2` module.
+    Use `dpsynth.TabularConfig` instead.
+
 ### Changed
 
 -   **Breaking**: The base install now contains only the dependencies required

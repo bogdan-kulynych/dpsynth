@@ -124,7 +124,7 @@ class DiscreteMechanismTest(absltest.TestCase):
     data = mbi.Dataset.synthetic(domain, N=200)
     rng = np.random.default_rng(0)
 
-    calibrated = config.calibrate(zcdp_rho=10000)
+    calibrated = config.calibrate(epsilon=1.0, delta=1e-5)
     result = calibrated(rng, data)
     self.assertIsInstance(result, common.DiscreteMechanismResult)
 
