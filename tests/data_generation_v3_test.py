@@ -439,9 +439,39 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     self.assertIsNotNone(mechanism)
     self.assertEqual(mechanism.total_count_sigma, 0.0)
 
+  def test_configure_with_schema(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
+        'B': domain.CategoricalAttribute(possible_values=['x', 'y', 'z']),
+    }
+    preset = TabularConfig()
+    calibrated = preset.configure(domains, zcdp_rho=100.0)
+    self.assertIsInstance(calibrated, data_generation_v3.TabularMechanism)
 
-if __name__ == '__main__':
-  absltest.main()
+  def test_configure_schema_overrides_domains(self):
+    old = {'A': domain.CategoricalAttribute(possible_values=['a', 'b'])}
+    new = {
+        'X': domain.CategoricalAttribute(possible_values=['x', 'y', 'z']),
+        'Y': domain.CategoricalAttribute(possible_values=['1', '2']),
+    }
+    config = TabularConfig(domains=old)
+    calibrated = config.configure(new, zcdp_rho=100.0)
+    self.assertSetEqual(set(calibrated.schema.keys()), {'X', 'Y'})
+
+  def test_configure_no_schema_no_domains_raises(self):
+    config = TabularConfig()
+    with self.assertRaisesRegex(ValueError, 'No schema provided'):
+      config.configure(zcdp_rho=100.0)
+
+  def test_configure_schema_with_constraints(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b']),
+    }
+    mock_constraint = object()
+    schema = domain.Schema(domains, constraints=[mock_constraint])
+    config = TabularConfig()
+    calibrated = config.configure(schema, zcdp_rho=100.0)
+    self.assertEqual(calibrated.schema.constraints, (mock_constraint,))
 
   def test_tabular_synthesizer_deprecated(self):
     with self.assertWarnsRegex(
@@ -450,3 +480,7 @@ if __name__ == '__main__':
         'and TabularMechanism for the calibrated runnable mechanism.',
     ):
       data_generation_v3.TabularSynthesizer(domains={})
+
+
+if __name__ == '__main__':
+  absltest.main()

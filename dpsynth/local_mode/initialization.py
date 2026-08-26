@@ -116,7 +116,7 @@ class NumericalInitializerConfig(api.MechanismConfig):
   def grid_size(self) -> int:
     return self.grid_spec[2]
 
-  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
     api.validate_max_records_per_user(max_records_per_user)
 
     levels = int(np.log2(self.num_partitions))
@@ -279,7 +279,7 @@ class CategoricalInitializerConfig(api.MechanismConfig):
 
   attribute: domain.CategoricalAttribute
 
-  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
     api.validate_max_records_per_user(max_records_per_user)
     return CategoricalInitializer(
         config=self,
@@ -329,7 +329,7 @@ class OpenSetInitializerConfig(api.MechanismConfig):
   attribute: domain.OpenSetCategoricalAttribute
   min_count: int = 1
 
-  def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
     api.validate_max_records_per_user(max_records_per_user)
     return OpenSetInitializer(
         config=self,

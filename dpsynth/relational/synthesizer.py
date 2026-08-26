@@ -1201,6 +1201,7 @@ class MultiTableConfig(api.MechanismConfig):
 
   def configure(
       self,
+      _=None,
       *,
       zcdp_rho: float,
       delta: float = 0.0,

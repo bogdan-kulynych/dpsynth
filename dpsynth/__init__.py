@@ -30,6 +30,7 @@ from dpsynth.domain import CategoricalAttribute
 from dpsynth.domain import FreeFormTextAttribute
 from dpsynth.domain import NumericalAttribute
 from dpsynth.domain import OpenSetCategoricalAttribute
+from dpsynth.domain import Schema
 
 ForeignKeyRelation = relational.ForeignKeyRelation
 MultiDataGenerationResult = relational.MultiDataGenerationResult
@@ -44,6 +45,7 @@ __all__ = [
     'MultiTableMechanism',
     'NumericalAttribute',
     'OpenSetCategoricalAttribute',
+    'Schema',
     'TabularConfig',
     'TabularMechanism',
     'TabularSynthesizer',

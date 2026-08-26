@@ -43,7 +43,7 @@ ignore this advice, so that downstream mechanisms don't generate out-of-domain
 values when none should exist.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import dataclasses
 import functools
 import math
@@ -304,7 +304,55 @@ AttributeType = (
     | FreeFormTextAttribute
 )
 
-Schema: TypeAlias = Mapping[str, AttributeType]
+
+@dataclasses.dataclass(frozen=True)
+class Schema(Mapping):
+  """Encapsulates a dataset's attribute specifications and constraints.
+
+  A ``Schema`` wraps a mapping from column names to attribute domain
+  specifications (e.g., ``CategoricalAttribute``, ``NumericalAttribute``)
+  alongside optional cross-attribute constraints. It implements
+  ``Mapping[str, AttributeType]`` so it can be used interchangeably with plain
+  dictionaries throughout the library.
+
+  Examples::
+
+    schema = Schema({'age': NumericalAttribute(0, 120)})
+    schema = Schema(
+        attributes={'age': NumericalAttribute(0, 120)},
+        constraints=[constraint],
+    )
+
+  Attributes:
+    attributes: Mapping from column names to attribute domain specifications.
+    constraints: Sequence of cross-attribute constraints to enforce.
+  """
+
+  attributes: Mapping[str, AttributeType]
+  constraints: tuple[Any, ...] = ()
+
+  def __init__(
+      self,
+      attributes: Mapping[str, AttributeType] | None = None,
+      *,
+      constraints: Sequence[Any] = (),
+      **kwargs: AttributeType,
+  ):
+    if attributes is None:
+      attributes = kwargs
+    elif kwargs:
+      raise TypeError('Cannot mix positional and keyword attributes.')
+    object.__setattr__(self, 'attributes', dict(attributes))
+    object.__setattr__(self, 'constraints', tuple(constraints))
+
+  def __getitem__(self, key: str) -> AttributeType:
+    return self.attributes[key]
+
+  def __iter__(self) -> Iterator[str]:
+    return iter(self.attributes)
+
+  def __len__(self) -> int:
+    return len(self.attributes)
 
 
 def to_yaml_file(domain: Mapping[str, AttributeType], filepath: str | PathType):

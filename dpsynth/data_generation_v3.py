@@ -196,21 +196,20 @@ class TabularMechanism(api.CalibratedMechanism):
   """End-to-end DP synthetic tabular data generation, calibrated and runnable.
 
   Attributes:
-    domains: Mapping from column names to attribute domain specifications.
+    config: The original configuration.
+    schema: The dataset schema and constraints.
     base_mechanism: The calibrated discrete mechanism.
     initializers: Per-column calibrated initializers.
     total_count_sigma: Sigma for the total-count mechanism.
-    cross_attribute_constraints: Constraints to enforce on generated data.
     max_records_per_user: Assumed upper bound on the number of records a single
       user contributes.
   """
 
   config: TabularConfig
-  domains: Mapping[str, domain.AttributeType]
+  schema: domain.Schema
   base_mechanism: discrete_mechanisms.CalibratedMechanism
   initializers: dict[str, api.CalibratedMechanism]
   total_count_sigma: float = dataclasses.field(repr=False)
-  cross_attribute_constraints: Sequence[constraints.Constraint] = ()
   max_records_per_user: int = 1
 
   @property
@@ -241,7 +240,7 @@ class TabularMechanism(api.CalibratedMechanism):
     Args:
       rng: A numpy random number generator.
       data: The dataset to generate synthetic data for. Must contain all columns
-        specified in ``domains``.
+        specified in ``schema``.
       cross_attribute_constraints: Constraints to enforce on generated data.
 
     Returns:
@@ -250,13 +249,15 @@ class TabularMechanism(api.CalibratedMechanism):
     Raises:
       ValueError: If required columns are missing from the input data.
     """
-    for col in self.domains:
+    for col in self.schema:
       if col not in data.columns:
         raise ValueError(
             f'{col=} not found in dataset. Available: {list(data.columns)}'
         )
     if not cross_attribute_constraints:
-      cross_attribute_constraints = self.config.cross_attribute_constraints
+      cross_attribute_constraints = (
+          self.schema.constraints or self.config.cross_attribute_constraints
+      )
 
     mbi_constraints = tuple(c.to_mbi() for c in cross_attribute_constraints)
 
@@ -284,14 +285,14 @@ class TabularMechanism(api.CalibratedMechanism):
         results[col] = init(rng, data[col].values)
 
     # Phase 2: Encode data to the discrete domain.
-    codec = TabularCodec.from_measurements(results, self.domains)
+    codec = TabularCodec.from_measurements(results, self.schema)
     discrete = codec.encode(data)
     logging.info('[DPSynth]: Finished encoding data.')
 
     # Phase 3: Run the discrete mechanism and decode back to the input domain.
     # Feed the noisy total (clique ()) and one-way column measurements as
     # initial measurements so the mechanism does not re-measure them.
-    column_order = [col for col in data.columns if col in self.domains]
+    column_order = [col for col in data.columns if col in self.schema]
     initial_measurements = [total_measurement, *codec.one_way_measurements()]
     mechanism_result = self.base_mechanism(
         rng,
@@ -317,15 +318,10 @@ class TabularMechanism(api.CalibratedMechanism):
 class TabularConfig(api.MechanismConfig):
   """Configures end-to-end DP synthetic data generation.
 
-  This config encodes input categorical and numerical data into a discrete
-  domain using local mode primitives, runs a discrete mechanism on the
-  discretized data, and converts the synthetic output back to the original
-  domain.
-
   Usage::
 
-      config = TabularConfig(domains=domains)
-      calibrated = config.configure(zcdp_rho=1.0)
+      config = TabularConfig(discrete_mechanism=MSTConfig())
+      calibrated = config.configure(schema, zcdp_rho=1.0)
       result = calibrated(rng, df)
       synthetic_df = result.synthetic_data
 
@@ -338,20 +334,20 @@ class TabularConfig(api.MechanismConfig):
     cross_attribute_constraints: Constraints to enforce on generated data.
   """
 
-  domains: Mapping[str, domain.AttributeType]
+  domains: Mapping[str, domain.AttributeType] | None = None
   discrete_mechanism: api.MechanismConfig = discrete_mechanisms.MSTConfig()
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
 
-  def _compute_per_col_deltas(self, delta):
+  def _compute_per_col_deltas(self, domains, delta):
     # Split delta across open-set columns, analogous to splitting zcdp_rho.
     # Under calibrate(), any delta not consumed here is automatically
     # available for the zCDP-to-(epsilon, delta) conversion, so this
     # simple additive split is tight.
     num_open_set = sum(
         isinstance(attr, domain.OpenSetCategoricalAttribute)
-        for attr in self.domains.values()
+        for attr in domains.values()
     )
     if num_open_set > 0 and delta <= 0:
       raise ValueError(
@@ -362,8 +358,8 @@ class TabularConfig(api.MechanismConfig):
     thresholding_delta = self.init_budget_fraction * delta
 
     per_col_deltas = {}
-    for col in self.domains:
-      if isinstance(self.domains[col], domain.OpenSetCategoricalAttribute):
+    for col in domains:
+      if isinstance(domains[col], domain.OpenSetCategoricalAttribute):
         per_col_deltas[col] = thresholding_delta / num_open_set
       else:
         per_col_deltas[col] = 0.0
@@ -371,6 +367,7 @@ class TabularConfig(api.MechanismConfig):
 
   def configure(
       self,
+      schema: domain.Schema | Mapping[str, domain.AttributeType] | None = None,
       *,
       zcdp_rho: float,
       delta: float = 0.0,
@@ -393,6 +390,7 @@ class TabularConfig(api.MechanismConfig):
     ensures the overall (epsilon, delta) guarantee is tight.
 
     Args:
+      schema: Dataset schema or mapping from column names to attribute domain.
       zcdp_rho: The zCDP privacy budget.
       delta: Overall approximate DP delta for the mechanism. A fraction
         (``init_budget_fraction``) is allocated to partition selection for
@@ -411,10 +409,26 @@ class TabularConfig(api.MechanismConfig):
     Raises:
       ValueError: If open-set attributes exist but delta is 0.
     """
-    api.validate_max_records_per_user(max_records_per_user)
-    per_col_deltas = self._compute_per_col_deltas(delta)
+    if schema is not None and isinstance(schema, domain.Schema):
+      pass
+    elif schema is not None:
+      schema = domain.Schema(
+          schema, constraints=self.cross_attribute_constraints
+      )
+    elif self.domains is not None:
+      schema = domain.Schema(
+          self.domains, constraints=self.cross_attribute_constraints
+      )
+    else:
+      raise ValueError(
+          'No schema provided. Pass schema to configure() or set domains at'
+          ' construction time.'
+      )
 
-    inits = create_initializers(self.domains, self.numerical_bins)
+    api.validate_max_records_per_user(max_records_per_user)
+    per_col_deltas = self._compute_per_col_deltas(schema, delta)
+
+    inits = create_initializers(schema, self.numerical_bins)
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)
@@ -439,7 +453,7 @@ class TabularConfig(api.MechanismConfig):
 
     return TabularMechanism(
         config=self,
-        domains=self.domains,
+        schema=schema,
         base_mechanism=calibrated_discrete,
         initializers=calibrated_inits,
         total_count_sigma=total_count_sigma,

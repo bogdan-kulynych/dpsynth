@@ -396,9 +396,9 @@ def generate_from_marginals(
     A DataGenerationResult containing the synthetic DataFrame.
   """
   # Emit columns in domain-declaration order for deterministic output.
-  column_order = [c for c in synth.domains if c in column_measurements]
+  column_order = [c for c in synth.schema if c in column_measurements]
   codec = data_generation_v3.TabularCodec.from_measurements(
-      column_measurements, synth.domains
+      column_measurements, synth.schema
   )
 
   initial_measurements = [total_measurement, *codec.one_way_measurements()]
@@ -468,7 +468,7 @@ def _run_two_pass(
 
     # Ask the configured discrete mechanism which marginals it needs.
     mbi_domain = data_generation_v3.TabularCodec.from_measurements(
-        column_measurements, synth.domains
+        column_measurements, synth.schema
     ).mbi_domain
 
     assert hasattr(synth.config.discrete_mechanism, 'supporting_cliques')
@@ -479,7 +479,7 @@ def _run_two_pass(
       rows = create_rows_fn(p)
       marginals = rows | ComputeMarginals(
           column_measurements,
-          dict(synth.domains),
+          dict(synth.schema),
           workload,
       )
       _ = marginals | 'WriteCliqueVector' >> beam.Map(
@@ -556,7 +556,7 @@ class BeamTabularConfig(api.MechanismConfig):
       )
 
   def configure(
-      self, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1
   ) -> BeamTabularMechanism:
     """Returns a copy whose synthesizer is configured with the given budget."""
     synthesizer = self.synthesizer.configure(
