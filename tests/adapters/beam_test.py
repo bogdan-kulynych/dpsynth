@@ -61,7 +61,6 @@ class NumericalHistogramTest(absltest.TestCase):
 
   def _run(self, rows, attr, max_grid_size=101, num_partitions=4):
     init = initialization.NumericalInitializerConfig(
-        name='x',
         num_partitions=num_partitions,
         attribute=attr,
         max_grid_size=max_grid_size,
@@ -79,7 +78,6 @@ class NumericalHistogramTest(absltest.TestCase):
   def _ref_counts(self, values, attr, max_grid_size=101, num_partitions=4):
     """In-memory grid histogram as an {index: count} dict."""
     init = initialization.NumericalInitializerConfig(
-        name='x',
         num_partitions=num_partitions,
         attribute=attr,
         max_grid_size=max_grid_size,
@@ -165,7 +163,6 @@ class CategoricalCountsTest(absltest.TestCase):
         out_of_domain_index=0,
     )
     init = initialization.CategoricalInitializerConfig(
-        name='col',
         attribute=attr,
     )
     rows = [
@@ -197,9 +194,7 @@ class OpenSetCountsTest(absltest.TestCase):
 
   def test_basic_counts(self):
     attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
-    init = initialization.OpenSetInitializerConfig(
-        name='col', attribute=attr, min_count=1
-    )
+    init = initialization.OpenSetInitializerConfig(attribute=attr, min_count=1)
     rows = [
         {'col': 'apple'},
         {'col': 'apple'},
@@ -232,13 +227,13 @@ class RunFromSummaryTest(absltest.TestCase):
 
     initializers = {
         'score': initialization.NumericalInitializerConfig(
-            name='score', num_partitions=4, attribute=num_attr
+            num_partitions=4, attribute=num_attr
         ),
         'grade': initialization.CategoricalInitializerConfig(
-            name='grade', attribute=cat_attr
+            attribute=cat_attr
         ),
         'tag': initialization.OpenSetInitializerConfig(
-            name='tag', attribute=open_attr, min_count=1
+            attribute=open_attr, min_count=1
         ),
     }
 
@@ -275,11 +270,9 @@ class ComputeMarginalsTest(absltest.TestCase):
     cat_attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
     num_attr = domain.NumericalAttribute(min_value=0, max_value=10)
     cat_init = initialization.CategoricalInitializerConfig(
-        name='color',
         attribute=cat_attr,
     )
     num_init = initialization.NumericalInitializerConfig(
-        name='size',
         num_partitions=4,
         attribute=num_attr,
         max_grid_size=11,

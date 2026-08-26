@@ -393,14 +393,6 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     synthetic_df = mech(np.random.default_rng(0), df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A'])
 
-  def test_custom_initializers_inherit_k(self):
-    domains = self._categorical_domains()
-    inits = data_generation_v3.create_initializers(domains, 32)
-    config = TabularConfig(domains=domains, initializers=inits)
-    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=2)
-    for init in calibrated.initializers.values():
-      self.assertEqual(init.max_records_per_user, 2)
-
   @parameterized.named_parameters(('zero', 0), ('negative', -3))
   def test_invalid_k_raises(self, k):
     config = TabularConfig(domains=self._categorical_domains())

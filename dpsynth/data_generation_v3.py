@@ -55,18 +55,15 @@ def create_initializers(
   for col, attr in domains.items():
     if isinstance(attr, domain.NumericalAttribute):
       initializers[col] = initialization.NumericalInitializerConfig(
-          name=col,
           num_partitions=numerical_bins,
           attribute=attr,
       )
     elif isinstance(attr, domain.CategoricalAttribute):
       initializers[col] = initialization.CategoricalInitializerConfig(
-          name=col,
           attribute=attr,
       )
     elif isinstance(attr, domain.OpenSetCategoricalAttribute):
       initializers[col] = initialization.OpenSetInitializerConfig(
-          name=col,
           attribute=attr,
       )
     else:
@@ -92,7 +89,7 @@ class ColumnCodec:
 
   def encode(self, values: np.ndarray) -> np.ndarray:
     """Encodes raw column values to discrete integer ids."""
-    if self.column_measurement.bin_edges is not None:
+    if isinstance(self.column_measurement, initialization.NumericalMeasurement):
       return vtx.discretize(
           # pyrefly: ignore[bad-argument-type]
           values, self.column_measurement.bin_edges, self.attribute
@@ -103,7 +100,7 @@ class ColumnCodec:
 
   def decode(self, ids: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """Decodes synthetic discrete ids back to the original domain."""
-    if self.column_measurement.bin_edges is not None:
+    if isinstance(self.column_measurement, initialization.NumericalMeasurement):
       return vtx.undiscretize(
           # pyrefly: ignore[bad-argument-type]
           ids, self.column_measurement.bin_edges, self.attribute, rng=rng
@@ -147,12 +144,23 @@ class TabularCodec:
     )
 
   def one_way_measurements(self) -> list[mbi.LinearMeasurement]:
-    """Returns the non-None one-way marginal measurements, in column order."""
-    return [
-        c.column_measurement.measurement
-        for c in self.columns.values()
-        if c.column_measurement.measurement is not None
-    ]
+    """Constructs one-way marginal measurements from per-column noisy counts."""
+    measurements = []
+    for col, c in self.columns.items():
+      cm = c.column_measurement
+      if cm.noisy_counts is None:
+        continue
+      elif isinstance(cm, initialization.NumericalMeasurement):
+        query = mbi.DatavectorQuery(use_for_total_estimation=False)
+      elif isinstance(cm, initialization.OpenSetMeasurement):
+        query = mbi.SlicedQuery(start=1)
+      else:
+        query = mbi.DatavectorQuery()
+      measurement = mbi.LinearMeasurement(
+          cm.noisy_counts, (col,), stddev=cm.stddev, query=query
+      )
+      measurements.append(measurement)
+    return measurements
 
   def encode(self, data: pd.DataFrame) -> mbi.Dataset:
     """Encodes ``data`` into an mbi.Dataset over the discrete domain."""
@@ -334,7 +342,6 @@ class TabularConfig(api.MechanismConfig):
   discrete_mechanism: api.MechanismConfig = discrete_mechanisms.MSTConfig()
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
-  initializers: dict[str, api.MechanismConfig] | None = None
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
 
   def _compute_per_col_deltas(self, delta):
@@ -407,11 +414,7 @@ class TabularConfig(api.MechanismConfig):
     api.validate_max_records_per_user(max_records_per_user)
     per_col_deltas = self._compute_per_col_deltas(delta)
 
-    inits = (
-        self.initializers
-        if self.initializers is not None
-        else create_initializers(self.domains, self.numerical_bins)
-    )
+    inits = create_initializers(self.domains, self.numerical_bins)
     init_rho = self.init_budget_fraction * zcdp_rho
     # +1 for the DPGaussianCount that always measures the total.
     per_col_rho = init_rho / (len(inits) + 1)

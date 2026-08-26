@@ -136,14 +136,12 @@ class SynthesizerTest(absltest.TestCase):
     household_inits = {
         'income': (
             initialization.NumericalInitializerConfig(
-                name='income',
                 num_partitions=16,
                 attribute=domain.NumericalAttribute(min_value=0, max_value=100),
             ).configure(zcdp_rho=0.01)
         ),
         'region': (
             initialization.CategoricalInitializerConfig(
-                name='region',
                 attribute=domain.CategoricalAttribute(
                     possible_values=['U', 'R']
                 ),
@@ -153,7 +151,6 @@ class SynthesizerTest(absltest.TestCase):
     person_inits = {
         'age': (
             initialization.NumericalInitializerConfig(
-                name='age',
                 num_partitions=16,
                 attribute=domain.NumericalAttribute(min_value=0, max_value=100),
             ).configure(zcdp_rho=0.01)
@@ -738,7 +735,6 @@ class SynthesizerTest(absltest.TestCase):
 
     # 1. Numerical initializer on weighted data
     num_init = initialization.NumericalInitializerConfig(
-        name='income',
         num_partitions=8,
         attribute=domain.NumericalAttribute(min_value=0.0, max_value=100.0),
     ).configure(zcdp_rho=0.5)
@@ -747,14 +743,13 @@ class SynthesizerTest(absltest.TestCase):
     res_num = synthesizer._run_single_col_initializer(
         num_init, rng, data_num, weights_num, estimated_total=100.0
     )
+    self.assertIsInstance(res_num, initialization.NumericalMeasurement)
     self.assertIsNotNone(res_num.bin_edges)
     self.assertIsNotNone(res_num.categorical_attribute)
-    self.assertIsNotNone(res_num.measurement)
-    self.assertEqual(res_num.measurement.clique, ('income',))
+    self.assertIsNotNone(res_num.noisy_counts)
 
     # 2. Categorical initializer on weighted data
     cat_init = initialization.CategoricalInitializerConfig(
-        name='gender',
         attribute=domain.CategoricalAttribute(possible_values=['M', 'F']),
     ).configure(zcdp_rho=0.5)
     data_cat = np.array(['M', 'M', 'F', 'F'])
@@ -762,13 +757,12 @@ class SynthesizerTest(absltest.TestCase):
     res_cat = synthesizer._run_single_col_initializer(
         cat_init, rng, data_cat, weights_cat
     )
-    self.assertIsNone(res_cat.bin_edges)
+    self.assertIsInstance(res_cat, initialization.CategoricalMeasurement)
     self.assertEqual(res_cat.categorical_attribute.size, 2)
-    self.assertEqual(res_cat.measurement.clique, ('gender',))
+    self.assertIsNotNone(res_cat.noisy_counts)
 
     # 3. Open-set initializer on weighted strings (including mixed-type data)
     open_init = initialization.OpenSetInitializerConfig(
-        name='tags',
         attribute=domain.OpenSetCategoricalAttribute(),
         min_count=1,
     ).configure(zcdp_rho=0.5, delta=1e-3)
@@ -777,6 +771,7 @@ class SynthesizerTest(absltest.TestCase):
     res_open = synthesizer._run_single_col_initializer(
         open_init, rng, data_open, weights_open
     )
+    self.assertIsInstance(res_open, initialization.OpenSetMeasurement)
     self.assertIn('sport', res_open.categorical_attribute.possible_values)
     self.assertIn('123', res_open.categorical_attribute.possible_values)
 
@@ -792,7 +787,6 @@ class SynthesizerTest(absltest.TestCase):
         'Household': {
             'income': (
                 initialization.NumericalInitializerConfig(
-                    name='income',
                     num_partitions=8,
                     attribute=domain.NumericalAttribute(
                         min_value=0.0, max_value=100.0
@@ -801,7 +795,6 @@ class SynthesizerTest(absltest.TestCase):
             ),
             'region': (
                 initialization.CategoricalInitializerConfig(
-                    name='region',
                     attribute=domain.CategoricalAttribute(
                         possible_values=['U', 'R']
                     ),
@@ -811,7 +804,6 @@ class SynthesizerTest(absltest.TestCase):
         'Person': {
             'age': (
                 initialization.NumericalInitializerConfig(
-                    name='age',
                     num_partitions=8,
                     attribute=domain.NumericalAttribute(
                         min_value=0, max_value=100
@@ -870,7 +862,7 @@ class SynthesizerTest(absltest.TestCase):
     }
     table_measurements = {
         'Household': {
-            'income': initialization.ColumnMeasurement(
+            'income': initialization.NumericalMeasurement(
                 categorical_attribute=domain.CategoricalAttribute([
                     '0',
                     '1',
@@ -878,24 +870,21 @@ class SynthesizerTest(absltest.TestCase):
                     '3',
                 ]),
                 bin_edges=np.array([25.0, 50.0, 75.0]),
-                measurement=mbi.LinearMeasurement(
-                    np.array([5.0, 5.0, 5.0, 5.0]), ('income',), stddev=1.0
-                ),
+                noisy_counts=np.array([5.0, 5.0, 5.0, 5.0]),
+                stddev=1.0,
             ),
-            'region': initialization.ColumnMeasurement(
+            'region': initialization.CategoricalMeasurement(
                 categorical_attribute=domain.CategoricalAttribute(['U', 'R']),
-                measurement=mbi.LinearMeasurement(
-                    np.array([10.0, 10.0]), ('region',), stddev=1.0
-                ),
+                noisy_counts=np.array([10.0, 10.0]),
+                stddev=1.0,
             ),
         },
         'Person': {
-            'age': initialization.ColumnMeasurement(
+            'age': initialization.NumericalMeasurement(
                 categorical_attribute=domain.CategoricalAttribute(['0', '1']),
                 bin_edges=np.array([50.0]),
-                measurement=mbi.LinearMeasurement(
-                    np.array([10.0, 10.0]), ('age',), stddev=1.0
-                ),
+                noisy_counts=np.array([10.0, 10.0]),
+                stddev=1.0,
             ),
         },
     }
@@ -1407,29 +1396,33 @@ class SynthesizerTest(absltest.TestCase):
     }
     # Mock column measurements for initializers
     h_measurements = {
-        'income': initialization.ColumnMeasurement(
+        'income': initialization.NumericalMeasurement(
             categorical_attribute=domain.CategoricalAttribute(
                 possible_values=['[0.0, 50.0)', '[50.0, 100.0]']
             ),
             bin_edges=np.array([50.0]),
         ),
-        'region': initialization.ColumnMeasurement(
+        'region': initialization.CategoricalMeasurement(
             categorical_attribute=domain.CategoricalAttribute(
                 possible_values=['Urban', 'Rural']
             ),
+            noisy_counts=np.array([10.0, 10.0]),
+            stddev=1.0,
         ),
     }
     p_measurements = {
-        'age': initialization.ColumnMeasurement(
+        'age': initialization.NumericalMeasurement(
             categorical_attribute=domain.CategoricalAttribute(
                 possible_values=['[0, 50)', '[50, 100]']
             ),
             bin_edges=np.array([50.0]),
         ),
-        'gender': initialization.ColumnMeasurement(
+        'gender': initialization.CategoricalMeasurement(
             categorical_attribute=domain.CategoricalAttribute(
                 possible_values=['M', 'F']
             ),
+            noisy_counts=np.array([10.0, 10.0]),
+            stddev=1.0,
         ),
     }
     codecs = {

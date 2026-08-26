@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import TypeVar
 
 import dp_accounting
 from dpsynth import api
@@ -26,11 +25,8 @@ from dpsynth import domain
 from dpsynth.local_mode import _quantiles
 from dpsynth.local_mode import primitives
 from dpsynth.local_mode import vectorized_transformations as vtx
-import mbi
 import numpy as np
 import scipy.stats
-
-_M = TypeVar('_M')
 
 
 def encode_to_grid(values, lower, upper, delta, **_):
@@ -53,29 +49,43 @@ def encode_to_grid(values, lower, upper, delta, **_):
   return np.round((clamped - lower) / delta).astype(np.int64)
 
 
-@dataclasses.dataclass
-class ColumnMeasurement:
-  """Result of running a column initializer on raw data.
-
-  Attributes:
-    categorical_attribute: The discovered or constructed CategoricalAttribute
-      defining the discrete domain for this column.
-    bin_edges: Inner bin edges for numerical columns (used for
-      discretize/undiscretize). None for categorical columns.
-    measurement: A noisy one-way marginal measurement, or None if the
-      initializer does not produce one (e.g. NumericalInitializer).
-  """
+@dataclasses.dataclass(frozen=True)
+class NumericalMeasurement:
+  """Measurement from a numerical initializer."""
 
   categorical_attribute: domain.CategoricalAttribute
-  bin_edges: np.ndarray | None = None
-  measurement: mbi.LinearMeasurement | None = None
+  bin_edges: np.ndarray
+  noisy_counts: np.ndarray | None = None
+  stddev: float = np.nan
+
+
+@dataclasses.dataclass(frozen=True)
+class CategoricalMeasurement:
+  """Measurement from a categorical initializer."""
+
+  categorical_attribute: domain.CategoricalAttribute
+  noisy_counts: np.ndarray
+  stddev: float
+
+
+@dataclasses.dataclass(frozen=True)
+class OpenSetMeasurement:
+  """Measurement from an open-set categorical initializer."""
+
+  categorical_attribute: domain.CategoricalAttribute
+  noisy_counts: np.ndarray
+  stddev: float
+
+
+ColumnMeasurement = (
+    NumericalMeasurement | CategoricalMeasurement | OpenSetMeasurement
+)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class NumericalInitializerConfig(api.MechanismConfig):
   """Configuration for initializing numerical attributes."""
 
-  name: str
   num_partitions: int
   attribute: domain.NumericalAttribute
   max_grid_size: int = 10_000_000
@@ -162,8 +172,8 @@ class NumericalInitializer(api.CalibratedMechanism):
       data: np.ndarray,
       *,
       estimated_total: float | None = None,
-  ) -> ColumnMeasurement:
-    """Returns a ColumnMeasurement with the discretization transform."""
+  ) -> NumericalMeasurement:
+    """Returns a NumericalMeasurement with the discretization transform."""
     counts = self._grid_histogram(data)
     return self.from_summary(rng, counts, estimated_total=estimated_total)
 
@@ -190,8 +200,8 @@ class NumericalInitializer(api.CalibratedMechanism):
       counts: np.ndarray,
       *,
       estimated_total: float | None = None,
-  ) -> ColumnMeasurement:
-    """Returns a ColumnMeasurement from pre-aggregated histogram counts."""
+  ) -> NumericalMeasurement:
+    """Returns a NumericalMeasurement from pre-aggregated histogram counts."""
     jitter_strategy = (
         'refine' if self.config.attribute.dtype == 'int' else 'symmetric'
     )
@@ -209,7 +219,6 @@ class NumericalInitializer(api.CalibratedMechanism):
     return edges_to_column_measurement(
         raw_edges=raw_edges,
         attribute=self.config.attribute,
-        name=self.config.name,
         zcdp_rho=self.zcdp_rho,
         estimated_total=estimated_total,
         max_records_per_user=self.max_records_per_user,
@@ -219,37 +228,28 @@ class NumericalInitializer(api.CalibratedMechanism):
 def edges_to_column_measurement(
     raw_edges,
     attribute,
-    name,
     zcdp_rho,
     estimated_total=None,
     max_records_per_user=1,
-):
-  """Converts raw quantile edges into a ColumnMeasurement.
+) -> NumericalMeasurement:
+  """Converts raw quantile edges into a NumericalMeasurement.
 
   Handles edge deduplication, degenerate-bin removal, and categorical
-  attribute construction.  Shared between the data-based
-  ``NumericalInitializer`` and the histogram-based
-  ``HistogramNumericalInitializer``.
+  attribute construction.
 
   Args:
     raw_edges: Quantile edge values (unsorted duplicates are fine).
     attribute: The ``NumericalAttribute`` defining the data domain.
-    name: Attribute name used as the clique key in any measurement.
     zcdp_rho: Total zCDP rho consumed by the quantile mechanism.
     estimated_total: If provided, a heuristic one-way measurement is included.
     max_records_per_user: Assumed upper bound on the number of records a single
-      user contributes. Added noise (and mechanism sensitivity) is scaled by
-      this factor to provide user-level rather than record-level DP; the privacy
-      accounting is unchanged. Soundness relies on the caller enforcing this
-      bound.
+      user contributes.
 
   Returns:
-    A ``ColumnMeasurement`` with bin edges and optionally a measurement.
+    A ``NumericalMeasurement`` with bin edges and optionally noisy counts.
   """
   raw_edges = np.asarray(raw_edges, dtype=float)
   bin_edges, edge_counts = np.unique(raw_edges, return_counts=True)
-  # Edges at or above max_value produce a degenerate empty tail bin;
-  # absorb their weight into the last real bin.
   max_val = attribute.max_value
   if len(bin_edges) > 0 and bin_edges[-1] >= max_val:
     tail_count = edge_counts[-1]
@@ -260,28 +260,23 @@ def edges_to_column_measurement(
     bin_weights = np.append(edge_counts, 1)
   cat_attr = vtx.categorical_attribute_from_edges(bin_edges, attribute)
 
-  measurement = None
+  noisy_counts = None
+  stddev = np.nan
   if estimated_total is not None:
     if not attribute.clip_to_range:
-      # Prepend zero weight for the OUT_OF_DOMAIN slot at index 0.
       bin_weights = np.r_[0, bin_weights]
-    counts = estimated_total * bin_weights / bin_weights.sum()
+    noisy_counts = estimated_total * bin_weights / bin_weights.sum()
     stddev = max_records_per_user / np.sqrt(zcdp_rho)
-    measurement = mbi.LinearMeasurement(
-        counts,
-        (name,),
-        stddev=stddev,
-        query=mbi.DatavectorQuery(use_for_total_estimation=False),
-    )
 
-  return ColumnMeasurement(cat_attr, bin_edges, measurement=measurement)
+  return NumericalMeasurement(
+      cat_attr, bin_edges, noisy_counts=noisy_counts, stddev=stddev
+  )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CategoricalInitializerConfig(api.MechanismConfig):
   """Configuration for initializing categorical attributes."""
 
-  name: str
   attribute: domain.CategoricalAttribute
 
   def configure(self, *, zcdp_rho, delta=0, max_records_per_user=1):
@@ -308,33 +303,29 @@ class CategoricalInitializer(api.CalibratedMechanism):
 
   def __call__(
       self, rng: np.random.Generator, data: np.ndarray
-  ) -> ColumnMeasurement:
-    """Returns a ColumnMeasurement with the noisy histogram."""
+  ) -> CategoricalMeasurement:
+    """Returns a CategoricalMeasurement with the noisy histogram."""
     encoded = vtx.discrete_encode(data, self.config.attribute)
     counts = np.bincount(encoded, minlength=self.config.attribute.size)
     return self.from_summary(rng, counts)
 
   def from_summary(
       self, rng: np.random.Generator, counts: np.ndarray
-  ) -> ColumnMeasurement:
-    """Returns a ColumnMeasurement from pre-aggregated counts."""
+  ) -> CategoricalMeasurement:
+    """Returns a CategoricalMeasurement from pre-aggregated counts."""
     noisy = primitives.add_gaussian_noise(
         rng, counts, self.sigma, self.max_records_per_user
     )
-    noisy_counts = np.asarray(noisy)
-    measurement = mbi.LinearMeasurement(
-        noisy_counts,
-        (self.config.name,),
-        stddev=self.max_records_per_user * self.sigma,
+    stddev = self.max_records_per_user * self.sigma
+    return CategoricalMeasurement(
+        self.config.attribute, noisy_counts=np.asarray(noisy), stddev=stddev
     )
-    return ColumnMeasurement(self.config.attribute, measurement=measurement)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class OpenSetInitializerConfig(api.MechanismConfig):
   """Configuration for initializing open-set categorical attributes."""
 
-  name: str
   attribute: domain.OpenSetCategoricalAttribute
   min_count: int = 1
 
@@ -366,7 +357,7 @@ class OpenSetInitializer(api.CalibratedMechanism):
 
   def __call__(
       self, rng: np.random.Generator, data: np.ndarray
-  ) -> ColumnMeasurement:
+  ) -> OpenSetMeasurement:
     """Returns a differentially private measurement of the given data."""
     unique_values, inverse = np.unique(data, return_inverse=True)
     counts = np.bincount(inverse)
@@ -377,8 +368,8 @@ class OpenSetInitializer(api.CalibratedMechanism):
       rng: np.random.Generator,
       unique_values: np.ndarray,
       counts: np.ndarray,
-  ) -> ColumnMeasurement:
-    """Returns a ColumnMeasurement from pre-aggregated value counts."""
+  ) -> OpenSetMeasurement:
+    """Returns an OpenSetMeasurement from pre-aggregated value counts."""
     above_min = counts >= self.config.min_count
     eligible_idx = np.where(above_min)[0]
     eligible_counts = counts[above_min].astype(float)
@@ -410,17 +401,10 @@ class OpenSetInitializer(api.CalibratedMechanism):
           pub,
       )
 
-    # Build the discovered domain: default first, then selected values.
     default = self.config.attribute.default_value
     possible_values = [default] + selected_values.tolist()
     cat_attr = domain.CategoricalAttribute(possible_values)
 
-    # The measurement covers only the discovered partitions (indices 1:),
-    # not the unmeasured default at index 0.
-    measurement = mbi.LinearMeasurement(
-        estimated_counts,  # pyrefly: ignore[bad-argument-type]
-        (self.config.name,),
-        stddev=stddev,
-        query=mbi.SlicedQuery(start=1),
+    return OpenSetMeasurement(
+        cat_attr, noisy_counts=estimated_counts, stddev=stddev
     )
-    return ColumnMeasurement(cat_attr, measurement=measurement)
