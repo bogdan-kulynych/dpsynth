@@ -1,6 +1,6 @@
 # DPSynth Adapters
 
-This module wraps local mode mechanisms (`TabularSynthesizer`) to support other
+This module wraps local mode mechanisms (`TabularConfig`) to support other
 data formats beyond the basic `pd.DataFrame` (or a dictionary of numpy arrays,
 which could also probably be supported).
 
@@ -11,7 +11,7 @@ and these can be added on an as-needed basis (making sure the dependencies they
 require remain optional for the core library to keep it lightweight).
 
 > **Note:** This does NOT act as a replacement for the `pipeline_dp` code.
-> Adapters provide a lightweight bridge for `TabularSynthesizer` but are not a
+> Adapters provide a lightweight bridge for `TabularConfig` but are not a
 > substitute for a hardened, pipeline-native DP framework such as PipelineDP,
 > which should be preferred for production pipelines.
 >

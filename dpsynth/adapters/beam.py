@@ -66,26 +66,26 @@ CalibratedInitializer = (
 class _EncodeColumns(beam.DoFn):
   """Encodes each row into (column, key) pairs for all columns at once."""
 
-  def __init__(self, initializers: dict[str, Initializer]):
+  def __init__(self, initializers: dict[str, CalibratedInitializer]):
     # Do all setup in __init__ so that process below is cheaper.
     # We handle all columns at once here to reduce the size of the DAG in Beam.
     super().__init__()
     self._specs: list[tuple[str, str, dict[str, Any]]] = []
     for column, init in initializers.items():
-      if isinstance(init, initialization.NumericalInitializerConfig):
+      if isinstance(init, initialization.NumericalInitializer):
         attr = init.attribute
         lower, upper, gs = init.grid_spec
         delta = (upper - lower) / (gs - 1)
         meta = dict(attribute=attr, lower=lower, upper=upper, delta=delta)
         self._specs.append((column, 'numerical', meta))
 
-      elif isinstance(init, initialization.CategoricalInitializerConfig):
+      elif isinstance(init, initialization.CategoricalInitializer):
         meta = {
             'lookup': init.attribute.lookup,
             'default': init.attribute.out_of_domain_index,
         }
         self._specs.append((column, 'categorical', meta))
-      elif isinstance(init, initialization.OpenSetInitializerConfig):
+      elif isinstance(init, initialization.OpenSetInitializer):
         self._specs.append((column, 'openset', {}))
       else:
         raise TypeError(f'Unsupported initializer type: {type(init)}')
@@ -138,13 +138,13 @@ class ComputeSufficientStats(beam.PTransform):
     initializers: Calibrated initializers keyed by column name.
   """
 
-  def __init__(self, initializers: dict[str, Initializer]):
+  def __init__(self, initializers: dict[str, CalibratedInitializer]):
     super().__init__()
     self._initializers = initializers
     self._openset_min_counts = {
-        col: init.min_count
+        col: init.config.min_count
         for col, init in initializers.items()
-        if isinstance(init, initialization.OpenSetInitializerConfig)
+        if isinstance(init, initialization.OpenSetInitializer)
     }
 
   def expand(
@@ -211,10 +211,10 @@ def run_from_summary(
   for column, init in initializers.items():
     sparse = sparse_stats[column]
     if isinstance(init, initialization.NumericalInitializer):
-      counts = _sparse_to_dense_numerical(sparse, init.config.grid_spec[2])
+      counts = _sparse_to_dense_numerical(sparse, init.grid_spec[2])
       results[column] = init.from_summary(rng, counts)
     elif isinstance(init, initialization.CategoricalInitializer):
-      counts = _sparse_to_dense_categorical(sparse, init.config.attribute.size)
+      counts = _sparse_to_dense_categorical(sparse, init.attribute.size)
       results[column] = init.from_summary(rng, counts)
     elif isinstance(init, initialization.OpenSetInitializer):
       unique_values, value_counts = _sparse_to_openset(sparse)
@@ -431,7 +431,6 @@ def _run_two_pass(
 
   sigma = synth.total_count_sigma
   inits = cast(dict[str, CalibratedInitializer], synth.initializers)
-  init_configs = {name: c.config for name, c in inits.items()}
   if pipeline_kwargs is None:
     pipeline_kwargs = {}
 
@@ -448,7 +447,7 @@ def _run_two_pass(
       rows = create_rows_fn(p)
       summary = (
           rows
-          | ComputeSufficientStats(init_configs)
+          | ComputeSufficientStats(inits)
           | 'ToDict' >> beam.combiners.ToDict()
       )
       _ = summary | 'WriteSummary' >> beam.Map(_write, path=summary_path)
@@ -556,10 +555,11 @@ class BeamTabularConfig(api.MechanismConfig):
       )
 
   def configure(
-      self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, schema=None, *, zcdp_rho, delta=0, max_records_per_user=1
   ) -> BeamTabularMechanism:
     """Returns a copy whose synthesizer is configured with the given budget."""
     synthesizer = self.synthesizer.configure(
+        schema,
         zcdp_rho=zcdp_rho,
         delta=delta,
         max_records_per_user=max_records_per_user,

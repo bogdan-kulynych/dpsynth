@@ -129,7 +129,7 @@ class MechanismConfig(abc.ABC):
 
   @abc.abstractmethod
   def configure(
-      self, schema=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, domain=None, *, zcdp_rho, delta=0, max_records_per_user=1
   ) -> CalibratedMechanism:
     """Returns a calibrated mechanism for the given zCDP budget.
 
@@ -143,10 +143,11 @@ class MechanismConfig(abc.ABC):
     not provided (i.e., is 0).
 
     Args:
-      schema: Optional dataset schema or mapping from column names to attribute
-        domain specifications (e.g., ``dpsynth.Schema`` or ``dict``). Mechanisms
-        that require a schema use this to determine column domains. Mechanisms
-        that do not need a schema ignore this argument.
+      domain: Optional domain specification over which the mechanism operates
+        (e.g., a dataset ``dpsynth.Schema`` or mapping from column names to
+        attribute domain specifications for tabular mechanisms, an individual
+        ``AttributeType`` for initializers, or a relational domain mapping).
+        Mechanisms that do not need a domain ignore this argument.
       zcdp_rho: The zCDP privacy budget (rho).
       delta: Approximate DP delta consumed by the mechanism itself (e.g., for
         thresholding). Defaults to 0 (pure zCDP). Mechanisms that need delta
@@ -217,7 +218,7 @@ class MechanismConfig(abc.ABC):
 
   def calibrate(
       self,
-      schema=None,
+      domain=None,
       *,
       epsilon: float,
       delta: float,
@@ -231,7 +232,7 @@ class MechanismConfig(abc.ABC):
     PLD accounting and picks whichever gives the tightest result.
 
     Args:
-      schema: Optional dataset schema, forwarded to ``configure()``.
+      domain: Optional domain specification, forwarded to ``configure()``.
       epsilon: Target epsilon for (epsilon, delta)-DP.
       delta: Target delta for (epsilon, delta)-DP.
       poisson_sampling_prob: If specified, calibrate the mechanism assuming the
@@ -249,7 +250,7 @@ class MechanismConfig(abc.ABC):
 
     def make_event_fn(rho: float) -> dp_accounting.DpEvent:
       base = self.configure(
-          schema,
+          domain,
           zcdp_rho=rho,
           delta=delta,
           max_records_per_user=max_records_per_user,
@@ -263,7 +264,7 @@ class MechanismConfig(abc.ABC):
         target_delta=delta,
     )
     return self.configure(
-        schema,
+        domain,
         zcdp_rho=optimal_rho,
         delta=delta,
         max_records_per_user=max_records_per_user,

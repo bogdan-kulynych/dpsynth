@@ -39,7 +39,7 @@ inference), they were developed independently and have different trade-offs:
 
 ### 1. In-Memory (Local) Mode
 
-**Entry point:** [`dpsynth.TabularSynthesizer`](dpsynth/__init__.py) (backed by
+**Entry point:** [`dpsynth.TabularConfig`](dpsynth/__init__.py) (backed by
 [`data_generation_v3.py`](dpsynth/data_generation_v3.py))
 
 Designed for **datasets that fit in memory** (e.g., Pandas DataFrames). We have
@@ -133,7 +133,7 @@ These modules are used by both the in-memory and pipeline code paths:
     utilities like domain compression.
 *   **[`data_generation_v3.py`](dpsynth/data_generation_v3.py)**: The
     end-to-end in-memory generation pipeline. This is what
-    `dpsynth.TabularSynthesizer` exposes.
+    `dpsynth.TabularConfig` exposes.
 *   **[`local_mode/`](dpsynth/local_mode/)**: Locally-optimized DP primitives
     for quantiles and partition selection (NumPy/SciPy-based).
 *   **[`adapters/pydantic_api.py`](dpsynth/adapters/pydantic_api.py)**: API for synthesizing
@@ -171,7 +171,7 @@ These modules are used by both the in-memory and pipeline code paths:
 
 | Scenario | Recommended |
 |---|---|
-| Fits in memory, Pandas workflow | **In-Memory** (`dpsynth.TabularSynthesizer`) |
+| Fits in memory, Pandas workflow | **In-Memory** (`dpsynth.TabularConfig`) |
 | Discrete data, precomputed marginals | **In-Memory** (`discrete_mechanisms`) |
 | Large-scale, distributed processing | **Pipeline** (`data_generation`) |
 | Marginals from an external system | **Post-Processing** |

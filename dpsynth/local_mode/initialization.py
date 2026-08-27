@@ -82,12 +82,29 @@ ColumnMeasurement = (
 )
 
 
+def compute_grid_spec(
+    attribute: domain.NumericalAttribute,
+    num_partitions: int,
+    max_grid_size: int = 10_000_000,
+) -> tuple[float, float, int]:
+  """Returns (lower, upper, grid_size) for the quantile candidate grid."""
+  min_value = float(attribute.min_value)
+  if attribute.dtype == 'int':
+    m = _quantiles.jitter_factor(num_partitions)
+    budget = max(2, max_grid_size // m)
+    int_range = int(attribute.max_value - attribute.min_value + 1)
+    step = max(1, math.ceil(int_range / budget))
+    gs = math.ceil(int_range / step)
+    return min_value, min_value + (gs - 1) * step, gs
+
+  return min_value, float(attribute.exclusive_max_value), max_grid_size
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class NumericalInitializerConfig(api.MechanismConfig):
   """Configuration for initializing numerical attributes."""
 
   num_partitions: int
-  attribute: domain.NumericalAttribute
   max_grid_size: int = 10_000_000
   epsilon_ratio: float = 2.0
 
@@ -97,26 +114,10 @@ class NumericalInitializerConfig(api.MechanismConfig):
     if self.num_partitions >= self.max_grid_size:
       raise ValueError(f'{self.num_partitions=} >= {self.max_grid_size=}')
 
-  @property
-  def grid_spec(self) -> tuple[float, float, int]:
-    """Returns (lower, upper, grid_size) for the quantile candidate grid."""
-    attr = self.attribute
-    min_value = float(attr.min_value)
-    if attr.dtype == 'int':
-      m = _quantiles.jitter_factor(self.num_partitions)
-      budget = max(2, self.max_grid_size // m)
-      int_range = int(attr.max_value - attr.min_value + 1)
-      step = max(1, math.ceil(int_range / budget))
-      gs = math.ceil(int_range / step)
-      return min_value, min_value + (gs - 1) * step, gs
-
-    return min_value, float(attr.exclusive_max_value), self.max_grid_size
-
-  @property
-  def grid_size(self) -> int:
-    return self.grid_spec[2]
-
-  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(
+      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+  ):
+    assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
 
     levels = int(np.log2(self.num_partitions))
@@ -129,6 +130,7 @@ class NumericalInitializerConfig(api.MechanismConfig):
     eps = np.sqrt(8.0 * rho_levels)
     return NumericalInitializer(
         config=self,
+        attribute=attribute,
         epsilon_levels=tuple(eps.tolist()),
         max_records_per_user=max_records_per_user,
     )
@@ -139,6 +141,7 @@ class NumericalInitializer(api.CalibratedMechanism):
   """Calibrated mechanism for initializing numerical attributes."""
 
   config: NumericalInitializerConfig
+  attribute: domain.NumericalAttribute
   epsilon_levels: tuple[float, ...]
   max_records_per_user: int = 1
 
@@ -151,8 +154,14 @@ class NumericalInitializer(api.CalibratedMechanism):
     return int(np.log2(self.config.num_partitions))
 
   @property
+  def grid_spec(self) -> tuple[float, float, int]:
+    return compute_grid_spec(
+        self.attribute, self.config.num_partitions, self.config.max_grid_size
+    )
+
+  @property
   def grid_size(self) -> int:
-    return self.config.grid_size
+    return self.grid_spec[2]
 
   @property
   def zcdp_rho(self) -> float:
@@ -180,9 +189,9 @@ class NumericalInitializer(api.CalibratedMechanism):
   def _grid_histogram(self, data):
     """Returns the quantile candidate-grid histogram (length grid_size)."""
     # Applies NumericalAttribute.standardize semantics in a vectorized manner.
-    lower, upper, gs = self.config.grid_spec
+    lower, upper, gs = self.grid_spec
     delta = (upper - lower) / (gs - 1)
-    attr = self.config.attribute
+    attr = self.attribute
     values = np.asarray(data, dtype=float)
     if attr.clip_to_range:
       values = np.where(np.isnan(values), attr.min_value, values)
@@ -202,9 +211,7 @@ class NumericalInitializer(api.CalibratedMechanism):
       estimated_total: float | None = None,
   ) -> NumericalMeasurement:
     """Returns a NumericalMeasurement from pre-aggregated histogram counts."""
-    jitter_strategy = (
-        'refine' if self.config.attribute.dtype == 'int' else 'symmetric'
-    )
+    jitter_strategy = 'refine' if self.attribute.dtype == 'int' else 'symmetric'
     indices = _quantiles.quantiles_from_histogram(
         rng,
         counts,
@@ -212,13 +219,13 @@ class NumericalInitializer(api.CalibratedMechanism):
         jitter_strategy=jitter_strategy,
         max_records_per_user=self.max_records_per_user,
     )
-    lower, upper, _ = self.config.grid_spec
+    lower, upper, _ = self.grid_spec
     delta = (upper - lower) / max(1, np.asarray(counts).size - 1)
     raw_edges = [lower + i * delta for i in indices]
 
     return edges_to_column_measurement(
         raw_edges=raw_edges,
-        attribute=self.config.attribute,
+        attribute=self.attribute,
         zcdp_rho=self.zcdp_rho,
         estimated_total=estimated_total,
         max_records_per_user=self.max_records_per_user,
@@ -277,12 +284,14 @@ def edges_to_column_measurement(
 class CategoricalInitializerConfig(api.MechanismConfig):
   """Configuration for initializing categorical attributes."""
 
-  attribute: domain.CategoricalAttribute
-
-  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(
+      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+  ):
+    assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
     return CategoricalInitializer(
         config=self,
+        attribute=attribute,
         sigma=math.sqrt(0.5 / zcdp_rho),
         max_records_per_user=max_records_per_user,
     )
@@ -293,6 +302,7 @@ class CategoricalInitializer(api.CalibratedMechanism):
   """Calibrated mechanism for initializing categorical attributes."""
 
   config: CategoricalInitializerConfig
+  attribute: domain.CategoricalAttribute
   sigma: float
   max_records_per_user: int = 1
 
@@ -305,8 +315,8 @@ class CategoricalInitializer(api.CalibratedMechanism):
       self, rng: np.random.Generator, data: np.ndarray
   ) -> CategoricalMeasurement:
     """Returns a CategoricalMeasurement with the noisy histogram."""
-    encoded = vtx.discrete_encode(data, self.config.attribute)
-    counts = np.bincount(encoded, minlength=self.config.attribute.size)
+    encoded = vtx.discrete_encode(data, self.attribute)
+    counts = np.bincount(encoded, minlength=self.attribute.size)
     return self.from_summary(rng, counts)
 
   def from_summary(
@@ -318,7 +328,7 @@ class CategoricalInitializer(api.CalibratedMechanism):
     )
     stddev = self.max_records_per_user * self.sigma
     return CategoricalMeasurement(
-        self.config.attribute, noisy_counts=np.asarray(noisy), stddev=stddev
+        self.attribute, noisy_counts=np.asarray(noisy), stddev=stddev
     )
 
 
@@ -326,13 +336,16 @@ class CategoricalInitializer(api.CalibratedMechanism):
 class OpenSetInitializerConfig(api.MechanismConfig):
   """Configuration for initializing open-set categorical attributes."""
 
-  attribute: domain.OpenSetCategoricalAttribute
   min_count: int = 1
 
-  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(
+      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+  ):
+    assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
     return OpenSetInitializer(
         config=self,
+        attribute=attribute,
         max_records_per_user=max_records_per_user,
         sigma=math.sqrt(0.5 / zcdp_rho),
         delta=delta,
@@ -344,6 +357,7 @@ class OpenSetInitializer(api.CalibratedMechanism):
   """Calibrated mechanism for initializing open-set categorical attributes."""
 
   config: OpenSetInitializerConfig
+  attribute: domain.OpenSetCategoricalAttribute
   max_records_per_user: int = 1
   sigma: float
   delta: float
@@ -391,8 +405,8 @@ class OpenSetInitializer(api.CalibratedMechanism):
         [str(v) for v in unique_values[selected_partitions]]
     )
 
-    if self.config.attribute.public_possible_values:
-      pub = np.array(self.config.attribute.public_possible_values)
+    if self.attribute.public_possible_values:
+      pub = np.array(self.attribute.public_possible_values)
       selected_values, estimated_counts = primitives.ensure_public_partitions(
           rng,
           selected_values,
@@ -401,7 +415,7 @@ class OpenSetInitializer(api.CalibratedMechanism):
           pub,
       )
 
-    default = self.config.attribute.default_value
+    default = self.attribute.default_value
     possible_values = [default] + selected_values.tolist()
     cat_attr = domain.CategoricalAttribute(possible_values)
 

@@ -57,16 +57,11 @@ def create_initializers(
     if isinstance(attr, domain.NumericalAttribute):
       initializers[col] = initialization.NumericalInitializerConfig(
           num_partitions=numerical_bins,
-          attribute=attr,
       )
     elif isinstance(attr, domain.CategoricalAttribute):
-      initializers[col] = initialization.CategoricalInitializerConfig(
-          attribute=attr,
-      )
+      initializers[col] = initialization.CategoricalInitializerConfig()
     elif isinstance(attr, domain.OpenSetCategoricalAttribute):
-      initializers[col] = initialization.OpenSetInitializerConfig(
-          attribute=attr,
-      )
+      initializers[col] = initialization.OpenSetInitializerConfig()
     else:
       raise ValueError(
           f'Unsupported attribute type for column {col!r}: {type(attr)}'
@@ -440,6 +435,7 @@ class TabularConfig(api.MechanismConfig):
 
     calibrated_inits = {
         col: init.configure(
+            schema[col],
             zcdp_rho=per_col_rho,
             delta=per_col_deltas[col],
             max_records_per_user=max_records_per_user,

@@ -91,7 +91,7 @@ def _preprocess_weighted_tables(
     hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
     rng: np.random.Generator | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, np.ndarray]]:
-  """Computes standalone hierarchical weights and filters tables to active rows (w > 0).
+  """Computes standalone hierarchical weights and filters tables to active rows.
 
   Args:
     tables: Mapping from table name to input DataFrame.
@@ -168,7 +168,7 @@ def _run_single_col_initializer(
     weights: np.ndarray,
     estimated_total: float | None = None,
 ) -> initialization.ColumnMeasurement:
-  """Runs a single calibrated column initializer on weighted standalone table data.
+  """Runs a single column initializer on weighted standalone table data.
 
   Formal Guarantees:
     - Sensitivity Alignment: Weighted histogram evaluation with sum(w) = N_root
@@ -192,7 +192,7 @@ def _run_single_col_initializer(
     ValueError: If init is not a supported initializer type.
   """
   if isinstance(init, initialization.NumericalInitializer):
-    attr = init.config.attribute
+    attr = init.attribute
     values = np.asarray(data, dtype=float)
     if attr.clip_to_range:
       values = np.where(np.isnan(values), attr.min_value, values)
@@ -201,16 +201,16 @@ def _run_single_col_initializer(
       values, weights = values[in_domain], weights[in_domain]
     if attr.dtype == 'int':
       values = np.round(values)
-    lower, upper, gs = init.config.grid_spec
+    lower, upper, gs = init.grid_spec
     delta = (upper - lower) / (gs - 1)
     indices = initialization.encode_to_grid(values, lower, upper, delta)
     counts = np.bincount(indices, weights=weights, minlength=gs)
     return init.from_summary(rng, counts, estimated_total=estimated_total)
 
   if isinstance(init, initialization.CategoricalInitializer):
-    encoded = vtx.discrete_encode(data, init.config.attribute)
+    encoded = vtx.discrete_encode(data, init.attribute)
     counts = np.bincount(
-        encoded, weights=weights, minlength=init.config.attribute.size
+        encoded, weights=weights, minlength=init.attribute.size
     )
     return init.from_summary(rng, counts)
 
@@ -232,7 +232,7 @@ def _run_table_initializers(
     weights: Mapping[str, np.ndarray],
     estimated_total: float | None = None,
 ) -> dict[str, dict[str, initialization.ColumnMeasurement]]:
-  """Runs calibrated column initializers across all tables and columns on weighted data.
+  """Runs column initializers across all tables on weighted data.
 
   Args:
     calibrated_initializers: Mapping from table and column name to calibrated
@@ -277,7 +277,7 @@ def _encode_and_compress_tables(
     dict[str, dict[str, np.ndarray]],
     dict[str, list[mbi.LinearMeasurement]],
 ]:
-  """Constructs TabularCodecs, encodes to mbi.Datasets, and applies domain compression.
+  """Encodes tables to mbi.Datasets and applies domain compression.
 
   Formal Guarantees:
     - Row Independence (No Cross-Example Mixing): Discretization encoding and
@@ -487,7 +487,7 @@ def _compute_link_sensitivities(
     hierarchy: Sequence[tuple[int, str, rel_domain.ForeignKeyRelation | None]],
     max_records_per_user: int = 1,
 ) -> dict[str, int]:
-  """Computes cascading sensitivity (Delta_k = prod s_ancestors) per relational link.
+  """Computes cascading sensitivity (Delta_k) per relational link.
 
   Overview:
     Relational multi-table synthesis generates data level-by-level down the
@@ -547,7 +547,7 @@ def _fit_and_sample_wide_link_mrf(
     num_rows: int,
     iters: int = 5000,
 ) -> mbi.Dataset:
-  """Fits an MRF on the wide generation domain and samples num_rows wide records.
+  """Fits an MRF on wide domain and samples num_rows wide records.
 
   Args:
     wide_domain: Generation mbi.Domain with s child slots.
@@ -850,7 +850,7 @@ def _decode_synthetic_tables(
     domains: Mapping[str, domain.Schema],
     rng: np.random.Generator,
 ) -> dict[str, pd.DataFrame]:
-  """Decodes decompressed discrete datasets into continuous/categorical DataFrames.
+  """Decodes discrete datasets into continuous/categorical DataFrames.
 
   Converts discrete integer bucket tokens back to native strings and continuous
   floats (uniformly dequantized within bucket intervals) per table schema.
@@ -962,6 +962,11 @@ class MultiTableMechanism(api.CalibratedMechanism):
   max_records_per_user: int = 1
 
   @property
+  def schema(self) -> Mapping[str, domain.Schema]:
+    """Returns the mapping from table name to dataset Schema."""
+    return self.domains
+
+  @property
   def dp_event(self) -> dp_accounting.DpEvent:
     """Returns the composed DpEvent combining all relational sub-mechanisms.
 
@@ -1051,23 +1056,21 @@ class MultiTableMechanism(api.CalibratedMechanism):
 
 @dataclasses.dataclass
 class MultiTableConfig(api.MechanismConfig):
-  """Configuration recipe for multi-table relational differential privacy synthesis.
+  """Recipe for multi-table relational differential privacy synthesis.
 
   Attributes:
-    domains: Mapping from table name to per-column attribute domain
-      specifications.
     foreign_keys: Sequence of foreign key relationships defining the hierarchy.
     discrete_mechanism: Discrete mechanism config (e.g. AIM, MST) for relational
       links.
     numerical_bins: Number of bins for numerical attribute discretization.
     init_budget_fraction: Fraction of total privacy budget allocated to column
       initialization.
+    initializers: Optional custom column initializers per table.
     num_permutation_slots: Permutation exploration slot count (o), default 2.
     exploration_strategy: Exploration strategy ('empty_token' or 'size_sliced').
   """
 
-  domains: Mapping[str, domain.Schema]
-  foreign_keys: Sequence[rel_domain.ForeignKeyRelation]
+  foreign_keys: Sequence[rel_domain.ForeignKeyRelation] = ()
   discrete_mechanism: api.MechanismConfig = dataclasses.field(
       default_factory=discrete_mechanisms.AIMConfig
   )
@@ -1078,17 +1081,6 @@ class MultiTableConfig(api.MechanismConfig):
   exploration_strategy: Literal['empty_token', 'size_sliced'] = 'empty_token'
 
   def __post_init__(self):
-    if len(self.domains) < 2:
-      raise ValueError(
-          'MultiTableConfig requires at least two tables in domains, got'
-          f' {len(self.domains)}. For single-table synthesis, use'
-          ' TabularConfig.'
-      )
-    if not self.foreign_keys:
-      raise ValueError(
-          'MultiTableConfig requires at least one foreign key relationship in'
-          ' foreign_keys. For single-table synthesis, use TabularConfig.'
-      )
     if not (0.0 < self.init_budget_fraction < 1.0):
       raise ValueError(
           'init_budget_fraction must be strictly in (0.0, 1.0), got'
@@ -1113,17 +1105,88 @@ class MultiTableConfig(api.MechanismConfig):
           f' {type(self.discrete_mechanism).__name__}.'
       )
 
+  def configure(
+      self,
+      schema: (
+          Mapping[str, domain.Schema | Mapping[str, domain.AttributeType]]
+          | None
+      ) = None,
+      *,
+      zcdp_rho: float,
+      delta: float = 0.0,
+      max_records_per_user: int = 1,
+  ) -> MultiTableMechanism:
+    """Configures privacy budgets across column initializers and links.
+
+    Formal Guarantees:
+      - Additive zCDP Partitioning: The total zCDP budget zcdp_rho is
+        additively split into init_rho (allocated to 1 root total-count
+        measurement and N_total_columns per-column initializers) and
+        total_discrete_rho (split evenly across relational hierarchy links).
+      - Root-Anchored Population Count: Only the root parent table total count
+        is measured with Gaussian noise (total_count_sigma).
+      - Descendant table row counts are generated via post-processing from the
+        wide discrete mechanism (unstacking non-empty slots under 'empty_token'
+        strategy or group size K under 'size_sliced' strategy).
+      - Pure zCDP for Gaussian Primitives: Numerical, closed categorical, and
+        root count initializers operate under pure zCDP (delta = 0.0).
+      - Thresholding Delta Partitioning: Open-set partition selection delta is
+        split additively across all open-set columns in all tables.
+      - Cascading Sensitivity Scaling: Downstream discrete mechanisms are
+        configured with cascading sensitivities Delta_k = prod s_ancestors,
+        guaranteeing root parent differential privacy without Cartesian joins.
+
+    Args:
+      schema: Mapping from table name to table domain schema (either a
+        `domain.Schema` or a mapping of column name to `AttributeType`).
+      zcdp_rho: The total zCDP privacy budget (rho > 0).
+      delta: Approximate DP delta for open-set Gaussian partition selection.
+      max_records_per_user: Upper bound on root entity contributions (>= 1).
+
+    Returns:
+      A calibrated, runnable MultiTableMechanism.
+
+    Raises:
+      ValueError: If configuration hyperparameters, schemas, or budgets are
+        invalid.
+    """
+    if schema is None:
+      raise ValueError(
+          'schema must be provided to MultiTableConfig.configure().'
+      )
+    if len(schema) < 2:
+      raise ValueError(
+          'MultiTableConfig requires at least two tables in schema, got'
+          f' {len(schema)}. For single-table synthesis, use TabularConfig.'
+      )
+    if not self.foreign_keys:
+      raise ValueError(
+          'MultiTableConfig requires at least one foreign key relationship in'
+          ' foreign_keys. For single-table synthesis, use TabularConfig.'
+      )
+    api.validate_max_records_per_user(max_records_per_user)
+    if zcdp_rho <= 0:
+      raise ValueError(f'zcdp_rho must be positive, got {zcdp_rho}.')
+
+    # Normalize table schemas into domain.Schema instances.
+    domains: dict[str, domain.Schema] = {
+        table: (
+            table_schema
+            if isinstance(table_schema, domain.Schema)
+            else domain.Schema(table_schema)
+        )
+        for table, table_schema in schema.items()
+    }
+
     # 1. Validate table names, column names, and attribute types.
-    for table_name, schema in self.domains.items():
+    for table_name, table_schema in domains.items():
       if '.' in table_name:
         raise ValueError(
             f"Table name {table_name!r} must not contain '.' characters."
         )
-      if not schema:
-        raise ValueError(
-            f'Table {table_name!r} schema in domains cannot be empty.'
-        )
-      for col_name, attr in schema.items():
+      if not table_schema:
+        raise ValueError(f'Table {table_name!r} schema cannot be empty.')
+      for col_name, attr in table_schema.items():
         if '.' in col_name:
           raise ValueError(
               f"Table {table_name!r} column {col_name!r} must not contain '.'"
@@ -1152,10 +1215,9 @@ class MultiTableConfig(api.MechanismConfig):
               f' attribute type {type(attr).__name__}.'
           )
 
-    # 2. Validate DAG hierarchy (acyclicity, known tables,
-    # in-degree <= 1, single root).
+    # 2. Validate DAG hierarchy (acyclicity, known tables, in-degree <= 1).
     hierarchy = rel_domain.topological_sort_hierarchy(
-        list(self.domains.keys()), self.foreign_keys
+        list(domains.keys()), self.foreign_keys
     )
     roots = [t for _, t, fk in hierarchy if fk is None]
     if len(roots) > 1:
@@ -1167,30 +1229,30 @@ class MultiTableConfig(api.MechanismConfig):
 
     # 3. Ensure PK and FK columns are not present in domain schemas.
     for fk in self.foreign_keys:
-      if fk.parent_primary_key in self.domains[fk.parent_table]:
+      if fk.parent_primary_key in domains[fk.parent_table]:
         raise ValueError(
             f'Primary key column {fk.parent_primary_key!r} of table'
-            f' {fk.parent_table!r} must not be in domains[{fk.parent_table!r}].'
+            f' {fk.parent_table!r} must not be in schema[{fk.parent_table!r}].'
         )
-      if fk.child_foreign_key in self.domains[fk.child_table]:
+      if fk.child_foreign_key in domains[fk.child_table]:
         raise ValueError(
             f'Foreign key column {fk.child_foreign_key!r} of table'
-            f' {fk.child_table!r} must not be in domains[{fk.child_table!r}].'
+            f' {fk.child_table!r} must not be in schema[{fk.child_table!r}].'
         )
 
     # 4. Validate custom initializers structure if provided.
     if self.initializers is not None:
-      if set(self.initializers.keys()) != set(self.domains.keys()):
+      if set(self.initializers.keys()) != set(domains.keys()):
         raise ValueError(
             f'Custom initializers tables {set(self.initializers.keys())} do not'
-            f' match domains tables {set(self.domains.keys())}.'
+            f' match schema tables {set(domains.keys())}.'
         )
       for table_name, table_inits in self.initializers.items():
-        if set(table_inits.keys()) != set(self.domains[table_name].keys()):
+        if set(table_inits.keys()) != set(domains[table_name].keys()):
           raise ValueError(
               f'Custom initializers for table {table_name!r}'
               f' columns {set(table_inits.keys())} do not match'
-              f' domains columns {set(self.domains[table_name].keys())}.'
+              f' schema columns {set(domains[table_name].keys())}.'
           )
         for col_name, init_cfg in table_inits.items():
           if not isinstance(init_cfg, api.MechanismConfig):
@@ -1199,68 +1261,22 @@ class MultiTableConfig(api.MechanismConfig):
                 f' api.MechanismConfig, got {type(init_cfg).__name__}.'
             )
 
-  def configure(
-      self,
-      _=None,
-      *,
-      zcdp_rho: float,
-      delta: float = 0.0,
-      max_records_per_user: int = 1,
-  ) -> MultiTableMechanism:
-    """Configures privacy budgets across column initializers and relational links.
-
-    Formal Guarantees:
-      - Additive zCDP Partitioning: The total zCDP budget zcdp_rho is
-        additively split into init_rho (allocated to 1 root total-count
-        measurement and N_total_columns per-column initializers) and
-        total_discrete_rho (split evenly across relational hierarchy links).
-      - Root-Anchored Population Count: Only the root parent table total count
-        is measured with Gaussian noise (total_count_sigma).
-      - Descendant table row counts are generated via post-processing from the
-        wide discrete mechanism (unstacking non-empty slots under 'empty_token'
-        strategy or group size K under 'size_sliced' strategy).
-      - Pure zCDP for Gaussian Primitives: Numerical, closed categorical, and
-        root count initializers operate under pure zCDP (delta = 0.0).
-      - Thresholding Delta Partitioning: Open-set partition selection delta is
-        split additively across all open-set columns in all tables.
-      - Cascading Sensitivity Scaling: Downstream discrete mechanisms are
-        configured with cascading sensitivities Delta_k = prod s_ancestors,
-        guaranteeing root parent differential privacy without Cartesian joins.
-
-    Args:
-      zcdp_rho: The total zCDP privacy budget (rho > 0).
-      delta: Approximate DP delta for open-set Gaussian partition selection.
-      max_records_per_user: Upper bound on root entity contributions (>= 1).
-
-    Returns:
-      A calibrated, runnable MultiTableMechanism.
-
-    Raises:
-      ValueError: If configuration hyperparameters or budgets are invalid.
-    """
-    api.validate_max_records_per_user(max_records_per_user)
-    if zcdp_rho <= 0:
-      raise ValueError(f'zcdp_rho must be positive, got {zcdp_rho}.')
-
-    hierarchy = rel_domain.topological_sort_hierarchy(
-        list(self.domains.keys()), self.foreign_keys
-    )
     link_sensitivities = _compute_link_sensitivities(
         hierarchy, max_records_per_user=max_records_per_user
     )
 
     per_col_deltas = _compute_table_col_deltas(
-        self.domains,
+        domains,
         delta=delta,
         init_budget_fraction=self.init_budget_fraction,
     )
     inits = (
         self.initializers
         if self.initializers is not None
-        else _create_table_initializers(self.domains, self.numerical_bins)
+        else _create_table_initializers(domains, self.numerical_bins)
     )
 
-    total_cols = sum(len(schema) for schema in self.domains.values())
+    total_cols = sum(len(table_schema) for table_schema in domains.values())
     init_rho = self.init_budget_fraction * zcdp_rho
     per_col_rho = init_rho / (total_cols + 1)  # +1 for root table total count.
     total_count_rho = per_col_rho
@@ -1270,6 +1286,7 @@ class MultiTableConfig(api.MechanismConfig):
     calibrated_inits = {
         table: {
             col: init.configure(
+                domains[table][col],
                 zcdp_rho=per_col_rho,
                 delta=per_col_deltas[table][col],
                 max_records_per_user=max_records_per_user,
@@ -1291,7 +1308,7 @@ class MultiTableConfig(api.MechanismConfig):
     }
 
     return MultiTableMechanism(
-        domains=self.domains,
+        domains=domains,
         foreign_keys=self.foreign_keys,
         calibrated_discrete_mechanisms=calibrated_discrete,
         calibrated_initializers=calibrated_inits,

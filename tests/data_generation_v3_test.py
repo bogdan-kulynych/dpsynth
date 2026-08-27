@@ -86,18 +86,20 @@ def _mixed_workload_mechanism_baseline_errors(
   data, domains = _make_mixed_data(rng, n=1000)
 
   mechanism_synth = TabularConfig(
-      domains=domains,
       discrete_mechanism=config,
       numerical_bins=numerical_bins,
   )
   baseline_synth = TabularConfig(
-      domains=domains,
       discrete_mechanism=baseline_config,
       numerical_bins=numerical_bins,
   )
 
-  mechanism_result = mechanism_synth.configure(zcdp_rho=zcdp_rho)(rng, data)
-  baseline_result = baseline_synth.configure(zcdp_rho=zcdp_rho)(rng, data)
+  mechanism_result = mechanism_synth.configure(domains, zcdp_rho=zcdp_rho)(
+      rng, data
+  )
+  baseline_result = baseline_synth.configure(domains, zcdp_rho=zcdp_rho)(
+      rng, data
+  )
 
   mechanism_error = np.mean([
       _normalized_l1(
@@ -131,7 +133,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertIsInstance(synthetic_df, pd.DataFrame)
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
@@ -143,7 +145,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': [5, 5, 0], 'B': [5, -10, -5]}, dtype=float)
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
     for col, attr in domains.items():
@@ -158,9 +160,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(
-        zcdp_rho=100.0, delta=1e-5
-    )
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0, delta=1e-5)
     synthetic_df = calibrated(rng, df).synthetic_data
     self.assertIsInstance(synthetic_df, pd.DataFrame)
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
@@ -176,9 +176,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).calibrate(
-        epsilon=100, delta=0.1
-    )
+    calibrated = TabularConfig().calibrate(domains, epsilon=100, delta=0.1)
     result = calibrated(rng, df)
     synthetic_df = result.synthetic_data
     self.assertIsInstance(synthetic_df, pd.DataFrame)
@@ -189,19 +187,14 @@ class DataGenerationV3Test(parameterized.TestCase):
         'A': domain.CategoricalAttribute(possible_values=['a', 'b']),
         'text': domain.FreeFormTextAttribute(max_tokens=128),
     }
-    v3 = TabularConfig(domains=domains)
+    v3 = TabularConfig()
     with self.assertRaises(Exception):
-      v3.configure(zcdp_rho=1.0)
+      v3.configure(domains, zcdp_rho=1.0)
 
   def test_raises_when_not_calibrated(self):
-    domains = {
-        'A': domain.CategoricalAttribute(
-            possible_values=['a', 'b', 'c'], out_of_domain_index=0
-        ),
-    }
     df = pd.DataFrame({'A': ['a', 'b', 'c']})
     rng = np.random.default_rng(0)
-    v3 = TabularConfig(domains=domains)
+    v3 = TabularConfig()
     with self.assertRaises(Exception):
       v3(rng, df)
 
@@ -211,7 +204,7 @@ class DataGenerationV3Test(parameterized.TestCase):
             possible_values=['a', 'b', 'c'], out_of_domain_index=0
         ),
     }
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     self.assertIsInstance(calibrated.dp_event, dp_accounting.ComposedDpEvent)
 
   def test_calibrate_small_epsilon(self):
@@ -225,9 +218,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).calibrate(
-        epsilon=0.2, delta=1e-5
-    )
+    calibrated = TabularConfig().calibrate(domains, epsilon=0.2, delta=1e-5)
     result = calibrated(rng, df)
     synthetic_df = result.synthetic_data
     self.assertIsInstance(synthetic_df, pd.DataFrame)
@@ -241,7 +232,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': [5, 5, 0], 'B': [5, -10, -5]}, dtype=float)
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
 
     # total_count_sigma should be set for numerical-only domains.
     self.assertIsNotNone(calibrated.total_count_sigma)
@@ -258,7 +249,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
 
     # DPGaussianCount is always allocated.
     self.assertIsNotNone(calibrated.total_count_sigma)
@@ -287,7 +278,7 @@ class DataGenerationV3Test(parameterized.TestCase):
         'B': ['x', 'y', 'x'],
     })
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     result = calibrated(rng, df)
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
     self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
@@ -344,7 +335,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     }
     df = pd.DataFrame(columns=['A', 'B'])
     rng = np.random.default_rng(0)
-    calibrated = TabularConfig(domains=domains).configure(zcdp_rho=100.0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     result = calibrated(rng, df)
 
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
@@ -364,30 +355,38 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   def test_configure_propagates_k_to_submechanisms(self):
     k = 5
-    config = TabularConfig(domains=self._categorical_domains())
-    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=k)
+    config = TabularConfig()
+    calibrated = config.configure(
+        self._categorical_domains(), zcdp_rho=100.0, max_records_per_user=k
+    )
     self.assertEqual(calibrated.max_records_per_user, k)
     self.assertEqual(calibrated.base_mechanism.max_records_per_user, k)
 
   def test_dp_event_invariant_to_k(self):
-    config = TabularConfig(domains=self._categorical_domains())
-    calibrated1 = config.configure(zcdp_rho=100.0)
-    calibrated2 = config.configure(zcdp_rho=100.0, max_records_per_user=5)
+    config = TabularConfig()
+    calibrated1 = config.configure(self._categorical_domains(), zcdp_rho=100.0)
+    calibrated2 = config.configure(
+        self._categorical_domains(), zcdp_rho=100.0, max_records_per_user=5
+    )
     self.assertEqual(repr(calibrated1.dp_event), repr(calibrated2.dp_event))
 
   def test_end_to_end_with_k(self):
     df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
-    config = TabularConfig(domains=self._categorical_domains())
-    calibrated = config.configure(zcdp_rho=100.0, max_records_per_user=3)
+    config = TabularConfig()
+    calibrated = config.configure(
+        self._categorical_domains(), zcdp_rho=100.0, max_records_per_user=3
+    )
     synthetic_df = calibrated(np.random.default_rng(0), df).synthetic_data
     self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
 
   def test_open_set_with_k_supported(self):
     df = pd.DataFrame({'A': ['a', 'b', 'c', 'a', 'b', 'a'] * 5})
     domains = {'A': domain.OpenSetCategoricalAttribute()}
-    base = TabularConfig(domains=domains).configure(zcdp_rho=100.0, delta=1e-5)
-    config = TabularConfig(domains=domains)
-    mech = config.configure(zcdp_rho=100.0, delta=1e-5, max_records_per_user=3)
+    base = TabularConfig().configure(domains, zcdp_rho=100.0, delta=1e-5)
+    config = TabularConfig()
+    mech = config.configure(
+        domains, zcdp_rho=100.0, delta=1e-5, max_records_per_user=3
+    )
     # Accounting is byte-identical across k; only the injected noise scales.
     self.assertEqual(repr(mech.dp_event), repr(base.dp_event))
     synthetic_df = mech(np.random.default_rng(0), df).synthetic_data
@@ -395,9 +394,11 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
 
   @parameterized.named_parameters(('zero', 0), ('negative', -3))
   def test_invalid_k_raises(self, k):
-    config = TabularConfig(domains=self._categorical_domains())
+    config = TabularConfig()
     with self.assertRaises(Exception):
-      _ = config.configure(zcdp_rho=100.0, max_records_per_user=k)
+      _ = config.configure(
+          self._categorical_domains(), zcdp_rho=100.0, max_records_per_user=k
+      )
 
   def test_poisson_calibrate_with_categorical_domains_and_gdp_mech(self):
     domains = {
@@ -405,10 +406,10 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'B': domain.CategoricalAttribute(possible_values=['x', 'y', 'z']),
     }
     config = TabularConfig(
-        domains=domains,
         discrete_mechanism=discrete_mechanisms.IndependentConfig(),
     )
     mechanism = config.calibrate(
+        domains,
         epsilon=1.0,
         delta=1e-6,
         poisson_sampling_prob=0.1,
@@ -421,9 +422,10 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'B': domain.NumericalAttribute(min_value=0, max_value=10),
         'C': domain.OpenSetCategoricalAttribute(),
     }
-    config = TabularConfig(domains=domains)
+    config = TabularConfig()
     with self.assertRaises(dp_accounting.UnsupportedEventError):
       _ = config.calibrate(
+          domains,
           epsilon=1.0,
           delta=1e-6,
           poisson_sampling_prob=0.1,
@@ -434,8 +436,8 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
         'B': domain.NumericalAttribute(min_value=0, max_value=10),
     }
-    config = TabularConfig(domains=domains)
-    mechanism = config.configure(zcdp_rho=np.inf)
+    config = TabularConfig()
+    mechanism = config.configure(domains, zcdp_rho=np.inf)
     self.assertIsNotNone(mechanism)
     self.assertEqual(mechanism.total_count_sigma, 0.0)
 

@@ -62,9 +62,8 @@ class NumericalHistogramTest(absltest.TestCase):
   def _run(self, rows, attr, max_grid_size=101, num_partitions=4):
     init = initialization.NumericalInitializerConfig(
         num_partitions=num_partitions,
-        attribute=attr,
         max_grid_size=max_grid_size,
-    )
+    ).configure(attr, zcdp_rho=np.inf)
     del _test_results[:]
     with beam.Pipeline() as p:
       stats = (
@@ -79,12 +78,9 @@ class NumericalHistogramTest(absltest.TestCase):
     """In-memory grid histogram as an {index: count} dict."""
     init = initialization.NumericalInitializerConfig(
         num_partitions=num_partitions,
-        attribute=attr,
         max_grid_size=max_grid_size,
-    )
-    dense = init.configure(zcdp_rho=np.inf)._grid_histogram(
-        np.asarray(values, dtype=float)
-    )
+    ).configure(attr, zcdp_rho=np.inf)
+    dense = init._grid_histogram(np.asarray(values, dtype=float))
     return {i: int(c) for i, c in enumerate(dense) if c}
 
   def test_basic_histogram(self):
@@ -162,8 +158,8 @@ class CategoricalCountsTest(absltest.TestCase):
         possible_values=['unk', 'a', 'b', 'c'],
         out_of_domain_index=0,
     )
-    init = initialization.CategoricalInitializerConfig(
-        attribute=attr,
+    init = initialization.CategoricalInitializerConfig().configure(
+        attr, zcdp_rho=np.inf
     )
     rows = [
         {'col': 'a'},
@@ -194,7 +190,9 @@ class OpenSetCountsTest(absltest.TestCase):
 
   def test_basic_counts(self):
     attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
-    init = initialization.OpenSetInitializerConfig(attribute=attr, min_count=1)
+    init = initialization.OpenSetInitializerConfig(min_count=1).configure(
+        attr, zcdp_rho=np.inf
+    )
     rows = [
         {'col': 'apple'},
         {'col': 'apple'},
@@ -225,15 +223,21 @@ class RunFromSummaryTest(absltest.TestCase):
     cat_attr = domain.CategoricalAttribute(possible_values=['a', 'b'])
     open_attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
 
-    initializers = {
-        'score': initialization.NumericalInitializerConfig(
-            num_partitions=4, attribute=num_attr
+    inits = {
+        'score': (
+            initialization.NumericalInitializerConfig(
+                num_partitions=4
+            ).configure(num_attr, zcdp_rho=np.inf, delta=1)
         ),
-        'grade': initialization.CategoricalInitializerConfig(
-            attribute=cat_attr
+        'grade': (
+            initialization.CategoricalInitializerConfig().configure(
+                cat_attr, zcdp_rho=np.inf, delta=1
+            )
         ),
-        'tag': initialization.OpenSetInitializerConfig(
-            attribute=open_attr, min_count=1
+        'tag': (
+            initialization.OpenSetInitializerConfig(min_count=1).configure(
+                open_attr, zcdp_rho=np.inf, delta=1
+            )
         ),
     }
 
@@ -247,16 +251,8 @@ class RunFromSummaryTest(absltest.TestCase):
     # Sufficient stats are computed in Beam, then DP init runs on the driver.
     del _test_results[:]
     with beam.Pipeline() as p:
-      stats = (
-          p
-          | beam.Create(rows)
-          | beam_adapter.ComputeSufficientStats(initializers)
-      )
+      stats = p | beam.Create(rows) | beam_adapter.ComputeSufficientStats(inits)
       _ = stats | beam.combiners.ToDict() | beam.Map(_store)
-    inits = {
-        k: v.configure(zcdp_rho=np.inf, delta=1)
-        for k, v in initializers.items()
-    }
     measurements = beam_adapter.run_from_summary(_test_results[0], inits, rng)
 
     self.assertLen(measurements, 3)
@@ -269,14 +265,13 @@ class ComputeMarginalsTest(absltest.TestCase):
   def test_marginals_match_manual_counts(self):
     cat_attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
     num_attr = domain.NumericalAttribute(min_value=0, max_value=10)
-    cat_init = initialization.CategoricalInitializerConfig(
-        attribute=cat_attr,
+    cat_init = initialization.CategoricalInitializerConfig().configure(
+        cat_attr, zcdp_rho=np.inf
     )
     num_init = initialization.NumericalInitializerConfig(
         num_partitions=4,
-        attribute=num_attr,
         max_grid_size=11,
-    )
+    ).configure(num_attr, zcdp_rho=np.inf)
     domains = {'color': cat_attr, 'size': num_attr}
     rows = [
         {'color': 'a', 'size': 0},
@@ -300,7 +295,7 @@ class ComputeMarginalsTest(absltest.TestCase):
       _ = stats | 'ToDict1' >> beam.combiners.ToDict() | beam.Map(_store)
     cms = beam_adapter.run_from_summary(
         _test_results[0],
-        {k: v.configure(zcdp_rho=np.inf) for k, v in inits.items()},
+        inits,
         rng,
     )
 
@@ -344,8 +339,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
     }
 
   def test_end_to_end_generates_synthetic_data(self):
-    synth = data_generation_v3.TabularConfig(domains=self._domains())
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
+    synth = data_generation_v3.TabularConfig()
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        self._domains(), zcdp_rho=100.0
+    )
     rows = [
         {'color': 'r', 'size': 's'},
         {'color': 'g', 'size': 'm'},
@@ -364,8 +361,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
         'age': domain.NumericalAttribute(min_value=0, max_value=100),
         'grade': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
     }
-    synth = data_generation_v3.TabularConfig(domains=domains)
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
+    synth = data_generation_v3.TabularConfig()
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        domains, zcdp_rho=100.0
+    )
     rng_data = np.random.default_rng(0)
     rows = [
         {
@@ -401,10 +400,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
         'a': domain.CategoricalAttribute(possible_values=['x', 'y']),
         'b': domain.CategoricalAttribute(possible_values=['p', 'q', 'r']),
     }
-    synth = data_generation_v3.TabularConfig(
-        domains=domains, discrete_mechanism=mechanism
+    synth = data_generation_v3.TabularConfig(discrete_mechanism=mechanism)
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        domains, zcdp_rho=100.0
     )
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     rows = [
         {'a': 'x', 'b': 'p'},
         {'a': 'y', 'b': 'q'},
@@ -420,8 +419,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
   def test_total_count_matches_input_under_high_budget(self):
     """With negligible noise, synthetic row count matches the input (F2)."""
     domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
-    synth = data_generation_v3.TabularConfig(domains=domains)
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=1e8)
+    synth = data_generation_v3.TabularConfig()
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        domains, zcdp_rho=1e8
+    )
     rows = [{'a': 'x'}, {'a': 'y'}] * 150  # 300 rows.
 
     result = beam_synth(np.random.default_rng(0), _rows_fn(rows))
@@ -438,10 +439,11 @@ class BeamTabularConfigTest(parameterized.TestCase):
         attribute_domains=(a_attr, b_attr),
         impossible_combinations=[('a0', 'b1')],
     )
-    synth = data_generation_v3.TabularConfig(
-        domains=domains, cross_attribute_constraints=(constraint,)
+    schema = domain.Schema(domains, constraints=(constraint,))
+    synth = data_generation_v3.TabularConfig()
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        schema, zcdp_rho=100.0
     )
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
     # The data never contains (a0, b1). Without enforcement, independent
     # (a, b) marginals would put ~25% of mass on that cell; forwarding the
     # constraint suppresses it to a few percent (mbi's constrained sampling
@@ -465,8 +467,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
         'm': domain.CategoricalAttribute(possible_values=['c', 'd']),
         'a': domain.CategoricalAttribute(possible_values=['e', 'f']),
     }
-    synth = data_generation_v3.TabularConfig(domains=domains)
-    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
+    synth = data_generation_v3.TabularConfig()
+    beam_synth = beam_adapter.BeamTabularConfig(synth).configure(
+        domains, zcdp_rho=100.0
+    )
     rows = [
         {'z': 'a', 'm': 'c', 'a': 'e'},
         {'z': 'b', 'm': 'd', 'a': 'f'},
@@ -478,10 +482,10 @@ class BeamTabularConfigTest(parameterized.TestCase):
 
   def test_configure_returns_calibrated_wrapper(self):
     beam_synth = beam_adapter.BeamTabularConfig(
-        data_generation_v3.TabularConfig(domains=self._domains())
+        data_generation_v3.TabularConfig()
     )
 
-    configured = beam_synth.configure(zcdp_rho=1.0)
+    configured = beam_synth.configure(self._domains(), zcdp_rho=1.0)
 
     self.assertIsInstance(configured, beam_adapter.BeamTabularMechanism)
     # dp_event is delegated to the wrapped, now-calibrated synthesizer.
@@ -494,29 +498,28 @@ class BeamTabularConfigTest(parameterized.TestCase):
     # calibrate is inherited from DPMechanism; it binary-searches a zCDP budget
     # by repeatedly calling our configure (which delegates to the synthesizer).
     beam_synth = beam_adapter.BeamTabularConfig(
-        data_generation_v3.TabularConfig(domains=self._domains())
+        data_generation_v3.TabularConfig()
     )
 
-    calibrated = beam_synth.calibrate(epsilon=1.0, delta=1e-6)
+    calibrated = beam_synth.calibrate(self._domains(), epsilon=1.0, delta=1e-6)
 
     self.assertIsInstance(calibrated, beam_adapter.BeamTabularMechanism)
     self.assertIsNotNone(calibrated.dp_event)
 
   def test_uncalibrated_call_raises(self):
     beam_synth = beam_adapter.BeamTabularConfig(
-        data_generation_v3.TabularConfig(domains=self._domains())
+        data_generation_v3.TabularConfig()
     )
     with self.assertRaises(Exception):
       beam_synth(np.random.default_rng(0), lambda p: p)
 
   def test_honors_temp_location(self):
-    synth = data_generation_v3.TabularConfig(
-        domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
-    )
+    domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
+    synth = data_generation_v3.TabularConfig()
     temp_dir = self.create_tempdir().full_path
     beam_synth = beam_adapter.BeamTabularConfig(
         synth, temp_location=temp_dir
-    ).configure(zcdp_rho=100.0)
+    ).configure(domains, zcdp_rho=100.0)
     rows = [{'a': 'x'}, {'a': 'y'}] * 50
 
     result = beam_synth(np.random.default_rng(0), _rows_fn(rows))
@@ -525,10 +528,11 @@ class BeamTabularConfigTest(parameterized.TestCase):
     self.assertTrue(os.path.exists(os.path.join(temp_dir, 'clique_vector.bin')))
 
   def _single_col_synth(self):
-    synth = data_generation_v3.TabularConfig(
-        domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
+    domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
+    synth = data_generation_v3.TabularConfig()
+    return beam_adapter.BeamTabularConfig(synth).configure(
+        domains, zcdp_rho=100.0
     )
-    return beam_adapter.BeamTabularConfig(synth).configure(zcdp_rho=100.0)
 
   def _spy_mkdtemp(self):
     """Returns (created_paths_list, patched_mkdtemp) recording our temp dirs.
@@ -573,13 +577,12 @@ class BeamTabularConfigTest(parameterized.TestCase):
     self.assertFalse(os.path.exists(created[0]))
 
   def test_forwards_pipeline_options_to_both_passes(self):
-    synth = data_generation_v3.TabularConfig(
-        domains={'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
-    )
+    domains = {'a': domain.CategoricalAttribute(possible_values=['x', 'y'])}
+    synth = data_generation_v3.TabularConfig()
     options = pipeline_options.PipelineOptions(flags=['--runner=DirectRunner'])
     beam_synth = beam_adapter.BeamTabularConfig(
         synth, pipeline_options=options
-    ).configure(zcdp_rho=100.0)
+    ).configure(domains, zcdp_rho=100.0)
     rows = [{'a': 'x'}, {'a': 'y'}] * 50
     seen_options = []
     real_pipeline = beam.Pipeline
