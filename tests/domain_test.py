@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Mapping
 import math
 
 from absl.testing import absltest
@@ -212,6 +211,14 @@ class TestDomain(absltest.TestCase):
     loaded_domain = domain.from_yaml_file(temp_file.full_path)
     self.assertEqual(loaded_domain, original_domain)
 
+  def test_yaml_deprecation_warning(self):
+    attrs = {'a': domain.CategoricalAttribute(possible_values=['x'])}
+    temp_file = self.create_tempfile('dep.yaml', mode='w+')
+    with self.assertWarns(DeprecationWarning):
+      domain.to_yaml_file(attrs, temp_file.full_path)
+    with self.assertWarns(DeprecationWarning):
+      _ = domain.from_yaml_file(temp_file.full_path)
+
 
 class SchemaTest(absltest.TestCase):
 
@@ -221,26 +228,8 @@ class SchemaTest(absltest.TestCase):
     self.assertLen(s, 1)
     self.assertIsInstance(s['a'], domain.CategoricalAttribute)
     self.assertListEqual(list(s), ['a'])
-
-  def test_from_kwargs(self):
-    s = domain.Schema(a=domain.CategoricalAttribute(possible_values=['x']))
-    self.assertLen(s, 1)
-    self.assertIsInstance(s['a'], domain.CategoricalAttribute)
-
-  def test_mapping_protocol(self):
-    s = domain.Schema({'a': domain.CategoricalAttribute(possible_values=['x'])})
-    self.assertIsInstance(s, Mapping)
-
-  def test_items_keys_values(self):
-    attr = domain.NumericalAttribute(min_value=0, max_value=10)
-    s = domain.Schema({'age': attr})
-    self.assertListEqual(list(s.keys()), ['age'])
-    self.assertListEqual(list(s.values()), [attr])
-    self.assertListEqual(list(s.items()), [('age', attr)])
-
-  def test_positional_and_kwargs_raises(self):
-    with self.assertRaises(TypeError):
-      domain.Schema({'a': domain.CategoricalAttribute(['x'])}, b='extra')
+    self.assertIn('a', s)
+    self.assertNotIn('b', s)
 
   def test_empty_schema(self):
     s = domain.Schema({})
@@ -259,15 +248,7 @@ class SchemaTest(absltest.TestCase):
   def test_with_constraints(self):
     mock_constraint = object()
     s = domain.Schema(
-        {'a': domain.CategoricalAttribute(['x'])},
-        constraints=[mock_constraint],
-    )
-    self.assertSequenceEqual(s.constraints, (mock_constraint,))
-
-  def test_with_constraints_and_kwargs(self):
-    mock_constraint = object()
-    s = domain.Schema(
-        a=domain.CategoricalAttribute(['x']),
+        attributes={'a': domain.CategoricalAttribute(['x'])},
         constraints=[mock_constraint],
     )
     self.assertSequenceEqual(s.constraints, (mock_constraint,))

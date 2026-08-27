@@ -13,3 +13,15 @@
 # limitations under the License.
 
 """Local (in-memory) initialization and primitives."""
+
+from dpsynth.local_mode import initialization
+from dpsynth.local_mode.initialization import CategoricalInitializerConfig
+from dpsynth.local_mode.initialization import NumericalInitializerConfig
+from dpsynth.local_mode.initialization import OpenSetInitializerConfig
+
+__all__ = [
+    'CategoricalInitializerConfig',
+    'NumericalInitializerConfig',
+    'OpenSetInitializerConfig',
+    'initialization',
+]

@@ -116,6 +116,17 @@ class MechanismConfig(abc.ABC):
   as the mechanism's own privacy characterization allows.
   """
 
+  _registry: dict[str, type[MechanismConfig]] = {}
+
+  def __init_subclass__(cls, **kwargs: Any):
+    super().__init_subclass__(**kwargs)
+    MechanismConfig._registry[cls.__name__] = cls
+
+  @classmethod
+  def get_subclass(cls, name: str) -> type[MechanismConfig] | None:
+    """Returns the registered MechanismConfig subclass by name."""
+    return cls._registry.get(name)
+
   @abc.abstractmethod
   def configure(
       self, schema=None, *, zcdp_rho, delta=0, max_records_per_user=1

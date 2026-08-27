@@ -247,7 +247,8 @@ def to_dict(
   tables_dict: dict[str, dict[str, Any]] = {}
   for table_name, schema in table_domains.items():
     table_dict: dict[str, Any] = {}
-    for col_name, attr in schema.items():
+    attrs = schema.attributes if isinstance(schema, domain.Schema) else schema
+    for col_name, attr in attrs.items():
       attr_dict = dataclasses.asdict(attr)
       attr_dict['type'] = attr.__class__.__name__
       table_dict[col_name] = attr_dict

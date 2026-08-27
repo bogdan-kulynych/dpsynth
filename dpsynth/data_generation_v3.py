@@ -36,7 +36,7 @@ import pandas as pd
 
 
 def create_initializers(
-    domains: Mapping[str, domain.AttributeType],
+    domains: domain.Schema | Mapping[str, domain.AttributeType],
     numerical_bins: int,
 ) -> dict[str, api.MechanismConfig]:
   """Creates per-column initializers from the domain specification.
@@ -52,7 +52,8 @@ def create_initializers(
     ValueError: If a column has an unsupported attribute type.
   """
   initializers = {}
-  for col, attr in domains.items():
+  attrs = domains.attributes if isinstance(domains, domain.Schema) else domains
+  for col, attr in attrs.items():
     if isinstance(attr, domain.NumericalAttribute):
       initializers[col] = initialization.NumericalInitializerConfig(
           num_partitions=numerical_bins,
@@ -124,7 +125,7 @@ class TabularCodec:
   def from_measurements(
       cls,
       results: Mapping[str, initialization.ColumnMeasurement],
-      domains: Mapping[str, domain.AttributeType],
+      domains: domain.Schema | Mapping[str, domain.AttributeType],
   ) -> TabularCodec:
     """Builds a codec from initialization results and the original domains."""
     columns = {col: ColumnCodec(m, domains[col]) for col, m in results.items()}

@@ -17,6 +17,8 @@ keywords = []
 dependencies = [
     "absl-py",
     "attrs",
+    "cattrs",
+    "etils[epath]",
     "numpy",
     "pandas",
     "pydantic>=2.0",

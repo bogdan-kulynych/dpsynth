@@ -50,6 +50,7 @@ import math
 import pathlib
 
 from typing import Any, Literal, TypeAlias
+import warnings
 
 from absl import logging
 import numpy as np
@@ -306,22 +307,8 @@ AttributeType = (
 
 
 @dataclasses.dataclass(frozen=True)
-class Schema(Mapping):
+class Schema:
   """Encapsulates a dataset's attribute specifications and constraints.
-
-  A ``Schema`` wraps a mapping from column names to attribute domain
-  specifications (e.g., ``CategoricalAttribute``, ``NumericalAttribute``)
-  alongside optional cross-attribute constraints. It implements
-  ``Mapping[str, AttributeType]`` so it can be used interchangeably with plain
-  dictionaries throughout the library.
-
-  Examples::
-
-    schema = Schema({'age': NumericalAttribute(0, 120)})
-    schema = Schema(
-        attributes={'age': NumericalAttribute(0, 120)},
-        constraints=[constraint],
-    )
 
   Attributes:
     attributes: Mapping from column names to attribute domain specifications.
@@ -329,21 +316,11 @@ class Schema(Mapping):
   """
 
   attributes: Mapping[str, AttributeType]
-  constraints: tuple[Any, ...] = ()
+  constraints: Sequence[Any] = ()
 
-  def __init__(
-      self,
-      attributes: Mapping[str, AttributeType] | None = None,
-      *,
-      constraints: Sequence[Any] = (),
-      **kwargs: AttributeType,
-  ):
-    if attributes is None:
-      attributes = kwargs
-    elif kwargs:
-      raise TypeError('Cannot mix positional and keyword attributes.')
-    object.__setattr__(self, 'attributes', dict(attributes))
-    object.__setattr__(self, 'constraints', tuple(constraints))
+  def __post_init__(self):
+    if not isinstance(self.constraints, tuple):
+      object.__setattr__(self, 'constraints', tuple(self.constraints))
 
   def __getitem__(self, key: str) -> AttributeType:
     return self.attributes[key]
@@ -354,9 +331,24 @@ class Schema(Mapping):
   def __len__(self) -> int:
     return len(self.attributes)
 
+  def keys(self):
+    return self.attributes.keys()
+
+  def values(self):
+    return self.attributes.values()
+
+  def items(self):
+    return self.attributes.items()
+
 
 def to_yaml_file(domain: Mapping[str, AttributeType], filepath: str | PathType):
   """Writes a dictionary of Attribute objects to a YAML file."""
+  warnings.warn(
+      '`dpsynth.domain.to_yaml_file` is deprecated. Use `dpsynth.to_yaml` '
+      'instead.',
+      DeprecationWarning,
+      stacklevel=2,
+  )
   yaml_data = {}
   for name, attr_obj in domain.items():
     attr_data = dataclasses.asdict(attr_obj)
@@ -368,6 +360,12 @@ def to_yaml_file(domain: Mapping[str, AttributeType], filepath: str | PathType):
 
 def from_yaml_file(filepath: str | PathType) -> Mapping[str, AttributeType]:
   """Reads a dictionary of Attribute objects from a YAML file."""
+  warnings.warn(
+      '`dpsynth.domain.from_yaml_file` is deprecated. Use `dpsynth.from_yaml` '
+      'instead.',
+      DeprecationWarning,
+      stacklevel=2,
+  )
   with open(filepath, 'r') as f:
     yaml_data = yaml.safe_load(f)
   domain = {}

@@ -20,7 +20,9 @@ from dpsynth import api
 from dpsynth import constraints
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
+from dpsynth import local_mode
 from dpsynth import relational
+from dpsynth import serialize
 from dpsynth.data_generation_v3 import TabularConfig
 from dpsynth.data_generation_v3 import TabularMechanism
 from dpsynth.data_generation_v3 import TabularSynthesizer
@@ -31,6 +33,8 @@ from dpsynth.domain import FreeFormTextAttribute
 from dpsynth.domain import NumericalAttribute
 from dpsynth.domain import OpenSetCategoricalAttribute
 from dpsynth.domain import Schema
+from dpsynth.serialize import from_yaml
+from dpsynth.serialize import to_yaml
 
 ForeignKeyRelation = relational.ForeignKeyRelation
 MultiDataGenerationResult = relational.MultiDataGenerationResult
@@ -52,5 +56,9 @@ __all__ = [
     'api',
     'discrete_mechanisms',
     'domain',
+    'from_yaml',
+    'local_mode',
     'relational',
+    'serialize',
+    'to_yaml',
 ]
