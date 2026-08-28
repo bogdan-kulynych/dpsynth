@@ -667,6 +667,40 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     self.assertIn('a', cat_attr.possible_values)
     self.assertNotIn('b', cat_attr.possible_values)
 
+  def test_open_set_heterogeneous_input_with_none(self):
+    attr = domain.OpenSetCategoricalAttribute()
+    # Heterogeneous array containing None, strings, integers, and floats.
+    data = np.array(
+        ['a'] * 100 + [None] * 50 + [123] * 100 + [np.nan] * 10, dtype=object
+    )
+    init = initialization.OpenSetInitializerConfig(min_count=5).configure(
+        attr, zcdp_rho=1.0, delta=1e-6
+    )
+    col_meas = init(np.random.default_rng(0), data)
+    cat_attr = col_meas.categorical_attribute
+    self.assertIsInstance(cat_attr, domain.CategoricalAttribute)
+    self.assertIn('a', cat_attr.possible_values)
+    self.assertIn('123', cat_attr.possible_values)
+
+  def test_categorical_heterogeneous_input_with_none(self):
+    attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
+    data = np.array(['a', None, 'b', np.nan, 999, 'c'], dtype=object)
+    init = initialization.CategoricalInitializerConfig().configure(
+        attr, zcdp_rho=1.0
+    )
+    col_meas = init(np.random.default_rng(0), data)
+    self.assertIsNotNone(col_meas.noisy_counts)
+    self.assertLen(col_meas.noisy_counts, 3)
+
+  def test_numerical_heterogeneous_input_with_none(self):
+    attr = domain.NumericalAttribute(min_value=0, max_value=100)
+    data = np.array([10.5, None, 50.0, np.nan, '75.0'], dtype=object)
+    init = initialization.NumericalInitializerConfig(
+        num_partitions=4
+    ).configure(attr, zcdp_rho=1.0)
+    col_meas = init(np.random.default_rng(0), data)
+    self.assertIsNotNone(col_meas.bin_edges)
+
 
 if __name__ == '__main__':
   absltest.main()

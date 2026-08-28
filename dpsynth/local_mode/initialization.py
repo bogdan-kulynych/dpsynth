@@ -373,6 +373,7 @@ class OpenSetInitializer(api.CalibratedMechanism):
       self, rng: np.random.Generator, data: np.ndarray
   ) -> OpenSetMeasurement:
     """Returns a differentially private measurement of the given data."""
+    data = np.asarray(data, dtype=str)
     unique_values, inverse = np.unique(data, return_inverse=True)
     counts = np.bincount(inverse)
     return self.from_summary(rng, unique_values, counts)

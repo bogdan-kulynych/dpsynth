@@ -283,6 +283,29 @@ class DataGenerationV3Test(parameterized.TestCase):
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
     self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
 
+  def test_heterogeneous_input_dataframe_with_none(self):
+    """Verifies that DataFrames containing None, NaN, and mixed types run cleanly."""
+    domains = {
+        'cat_str': domain.CategoricalAttribute(possible_values=['a', 'b']),
+        'cat_int': domain.CategoricalAttribute(possible_values=[1, 2, 3]),
+        'num': domain.NumericalAttribute(min_value=0.0, max_value=100.0),
+        'openset': domain.OpenSetCategoricalAttribute(),
+    }
+    df = pd.DataFrame({
+        'cat_str': ['a', None, 'b', np.nan, 'other'],
+        'cat_int': [1, None, 2, np.nan, 999],
+        'num': [10.5, None, 50.0, np.nan, '75.0'],
+        'openset': ['alpha', None, 'beta', np.nan, 42],
+    })
+    rng = np.random.default_rng(0)
+    calibrated = TabularConfig().configure(domains, zcdp_rho=100.0, delta=1e-5)
+    result = calibrated(rng, df)
+    self.assertIsInstance(result.synthetic_data, pd.DataFrame)
+    self.assertListEqual(
+        result.synthetic_data.columns.tolist(),
+        ['cat_str', 'cat_int', 'num', 'openset'],
+    )
+
   def test_discrete_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
