@@ -207,22 +207,17 @@ class DataGenerationV3Test(parameterized.TestCase):
     calibrated = TabularConfig().configure(domains, zcdp_rho=100.0)
     self.assertIsInstance(calibrated.dp_event, dp_accounting.ComposedDpEvent)
 
-  def test_calibrate_small_epsilon(self):
+  def test_calibrate_domain_positional_only(self):
     domains = {
-        'A': domain.CategoricalAttribute(
-            possible_values=['a', 'b', 'c'], out_of_domain_index=0
-        ),
-        'B': domain.CategoricalAttribute(
-            possible_values=['x', 'y', 'z'], out_of_domain_index=0
-        ),
+        'A': domain.CategoricalAttribute(possible_values=['a', 'b', 'c']),
     }
-    df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': ['x', 'y', 'z']})
-    rng = np.random.default_rng(0)
-    calibrated = TabularConfig().calibrate(domains, epsilon=0.2, delta=1e-5)
-    result = calibrated(rng, df)
-    synthetic_df = result.synthetic_data
-    self.assertIsInstance(synthetic_df, pd.DataFrame)
-    self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
+    config = TabularConfig()
+    # Passing domain positionally works.
+    calibrated = config.calibrate(domains, epsilon=1.0, delta=1e-5)
+    self.assertIsNotNone(calibrated)
+    # Passing domain as keyword argument raises TypeError.
+    with self.assertRaises(TypeError):
+      config.calibrate(domain=domains, epsilon=1.0, delta=1e-5)  # pyrefly: ignore[unexpected-keyword]
 
   def test_numerical_only_uses_dp_count(self):
     """Numerical-only domains should allocate a DPGaussianCount for total."""

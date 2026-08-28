@@ -219,6 +219,7 @@ class MechanismConfig(abc.ABC):
   def calibrate(
       self,
       domain=None,
+      /,
       *,
       epsilon: float,
       delta: float,
