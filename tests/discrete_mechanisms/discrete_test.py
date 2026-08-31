@@ -14,6 +14,7 @@
 
 """Tests for DiscreteMechanism wrapper: 1-way bootstrapping and compression."""
 
+from unittest import mock
 from absl.testing import absltest
 from dpsynth.discrete_mechanisms import accounting
 from dpsynth.discrete_mechanisms import common
@@ -48,15 +49,6 @@ class DiscreteConfigTest(absltest.TestCase):
     )
     synth = config.configure(zcdp_rho=100.0)
     self.assertAlmostEqual(synth.one_way_gdp_budget, 0.0)
-
-  def test_supporting_cliques_delegates(self):
-    inner = MSTConfig(pgm_iters=500)
-    config = DiscreteConfig(mechanism=inner)
-    domain = mbi.Domain(['a', 'b', 'c'], [3, 4, 5])
-    self.assertEqual(
-        config.supporting_cliques(domain),
-        inner.supporting_cliques(domain),
-    )
 
 
 class DiscreteMechanismTest(absltest.TestCase):
@@ -127,6 +119,17 @@ class DiscreteMechanismTest(absltest.TestCase):
     calibrated = config.calibrate(epsilon=1.0, delta=1e-5)
     result = calibrated(rng, data)
     self.assertIsInstance(result, common.DiscreteMechanismResult)
+
+  def test_converts_dataset_to_clique_vector(self):
+    config = DiscreteConfig(mechanism=MSTConfig(pgm_iters=500))
+    synth = config.configure(zcdp_rho=100.0)
+    domain = mbi.Domain(['a', 'b'], [3, 4])
+    data = mbi.Dataset.synthetic(domain, N=20)
+    with mock.patch.object(
+        mst.MST, '__call__', side_effect=synth.base_mechanism.__call__
+    ) as mock_call:
+      synth(np.random.default_rng(0), data)
+      self.assertIsInstance(mock_call.call_args.args[1], mbi.CliqueVector)
 
 
 if __name__ == '__main__':

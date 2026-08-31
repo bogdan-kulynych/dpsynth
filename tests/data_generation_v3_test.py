@@ -19,6 +19,7 @@ import functools
 from absl.testing import absltest
 from absl.testing import parameterized
 import dp_accounting
+from dpsynth import constraints
 from dpsynth import data_generation_v3
 from dpsynth import discrete_mechanisms
 from dpsynth import domain
@@ -505,6 +506,59 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
         'and TabularMechanism for the calibrated runnable mechanism.',
     ):
       data_generation_v3.TabularSynthesizer(domains={})
+
+  def test_compress_columns(self):
+    domains = {
+        'A': domain.CategoricalAttribute(
+            possible_values=['common1', 'common2', 'rare1', 'rare2', 'rare3'],
+            out_of_domain_index=0,
+        ),
+        'B': domain.CategoricalAttribute(
+            possible_values=['x', 'y'], out_of_domain_index=0
+        ),
+    }
+    df = pd.DataFrame({
+        'A': ['common1'] * 500 + ['common2'] * 500,
+        'B': ['x'] * 500 + ['y'] * 500,
+    })
+    rng = np.random.default_rng(0)
+    calibrated = TabularConfig(compress_columns=True).configure(
+        domains, zcdp_rho=10000.0
+    )
+    result = calibrated(rng, df)
+    self.assertIsInstance(result.synthetic_data, pd.DataFrame)
+    self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
+    self.assertIn('A', result.discrete_mechanism_result.mappings)
+
+  def test_compress_columns_respects_constraints(self):
+    domains = {
+        'A': domain.CategoricalAttribute(
+            possible_values=['common1', 'common2', 'rare1', 'rare2', 'rare3'],
+            out_of_domain_index=0,
+        ),
+        'B': domain.CategoricalAttribute(
+            possible_values=['x', 'y'], out_of_domain_index=0
+        ),
+    }
+    df = pd.DataFrame({
+        'A': ['common1'] * 500 + ['common2'] * 500,
+        'B': ['x'] * 500 + ['y'] * 500,
+    })
+    constraint = constraints.Constraint(
+        attribute_names=('A', 'B'),
+        attribute_domains=(
+            domains['A'],
+            domains['B'],
+        ),
+        impossible_combinations=[('rare1', 'x')],
+    )
+    schema = domain.Schema(domains, constraints=[constraint])
+    rng = np.random.default_rng(0)
+    calibrated = TabularConfig(compress_columns=True).configure(
+        schema, zcdp_rho=10000.0
+    )
+    result = calibrated(rng, df)
+    self.assertNotIn('A', result.discrete_mechanism_result.mappings)
 
 
 if __name__ == '__main__':

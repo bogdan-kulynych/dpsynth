@@ -123,9 +123,19 @@ class SerializeTest(parameterized.TestCase):
     # Default domains=None and cross_attribute_constraints=() are omitted:
     self.assertNotIn('domains', raw_dict)
     self.assertNotIn('cross_attribute_constraints', raw_dict)
+    self.assertNotIn('compress_columns', raw_dict)
 
     loaded = serialize.from_yaml(yaml_str)
     self.assertEqual(loaded, config)
+
+  def test_tabular_config_with_compress_columns(self):
+    config = data_generation_v3.TabularConfig(
+        compress_columns=True,
+    )
+    yaml_str = serialize.to_yaml(config)
+    loaded = serialize.from_yaml(yaml_str)
+    self.assertEqual(loaded, config)
+    self.assertTrue(loaded.compress_columns)
 
   def test_tabular_config_with_legacy_domains(self):
     config = data_generation_v3.TabularConfig(

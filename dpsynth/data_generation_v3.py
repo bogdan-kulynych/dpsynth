@@ -289,7 +289,38 @@ class TabularMechanism(api.CalibratedMechanism):
     # Feed the noisy total (clique ()) and one-way column measurements as
     # initial measurements so the mechanism does not re-measure them.
     column_order = [col for col in data.columns if col in self.schema]
-    initial_measurements = [total_measurement, *codec.one_way_measurements()]
+    one_way_measurements = codec.one_way_measurements()
+    initial_measurements = [total_measurement, *one_way_measurements]
+
+    if self.config.compress_columns:
+      candidate_cols = [
+          col
+          for col in self.schema
+          if isinstance(self.schema[col], domain.CategoricalAttribute)
+      ]
+
+      mappings = dm_common.compression_mappings(
+          one_way_measurements,
+          compress_columns=candidate_cols,
+          constraints=mbi_constraints,
+      )
+    else:
+      mappings = {}
+
+    if mappings:
+      discrete = discrete.compress(mappings)  # pyrefly: ignore[bad-argument-type]
+      initial_measurements = [
+          m.compress(mappings, discrete.domain)  # pyrefly: ignore[bad-argument-type]
+          for m in initial_measurements
+      ]
+
+    cfg = self.config.discrete_mechanism
+    if hasattr(cfg, 'supporting_cliques'):
+      cliques = cfg.supporting_cliques(discrete.domain)
+      discrete = mbi.CliqueVector.from_projectable(
+          discrete, cliques  # pyrefly: ignore[bad-argument-type]
+      )
+
     mechanism_result = self.base_mechanism(
         rng,
         data=discrete,
@@ -298,9 +329,16 @@ class TabularMechanism(api.CalibratedMechanism):
     )
     logging.info('[DPSynth]: Generated discrete synthetic data.')
 
-    synthetic_data = codec.decode(
-        mechanism_result.synthetic_data, rng, column_order
-    )
+    synthetic_discrete = mechanism_result.synthetic_data
+    if mappings:
+      synthetic_discrete = synthetic_discrete.decompress(mappings)
+      mechanism_result = dataclasses.replace(
+          mechanism_result,
+          synthetic_data=synthetic_discrete,
+          mappings=mappings,
+      )
+
+    synthetic_data = codec.decode(synthetic_discrete, rng, column_order)
     logging.info('[DPSynth]: Converted data back to original domain.')
 
     return DataGenerationResult(
@@ -328,6 +366,8 @@ class TabularConfig(api.MechanismConfig):
     init_budget_fraction: Fraction of total zCDP budget allocated to per-column
       initialization (the rest goes to the discrete mechanism).
     cross_attribute_constraints: Constraints to enforce on generated data.
+    compress_columns: Whether to compress rare categories (< 3*sigma) for
+      CategoricalAttribute columns not present in constraints.
   """
 
   domains: Mapping[str, domain.AttributeType] | None = None
@@ -335,6 +375,7 @@ class TabularConfig(api.MechanismConfig):
   numerical_bins: int = 32
   init_budget_fraction: float = 0.1
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
+  compress_columns: bool = False
 
   def _compute_per_col_deltas(self, domains, delta):
     # Split delta across open-set columns, analogous to splitting zcdp_rho.

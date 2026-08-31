@@ -18,13 +18,7 @@
 SWIFT, etc.) with shared pre- and post-processing: one-way marginal
 measurement, domain compression, and decompression.  It is the recommended
 entry point for purely discrete tables; mixed-type tables should use
-``TabularSynthesizer`` in ``data_generation_v3.py`` instead.
-
-
-Note: This mechanism is not intended to be called directly. It should typically
-be used within `DiscreteMechanism` or `TabularSynthesizer`. Users who call it
-directly will miss out on features like 1-way measurement selection and domain
-compression.
+``dpsynth.TabularSynthesizer`` instead.
 """
 
 from __future__ import annotations
@@ -46,7 +40,7 @@ class DiscreteConfig(api.MechanismConfig):
   """Wraps an inner mechanism with one-way measurement and compression.
 
   Attributes:
-    mechanism: The inner mechanism config (e.g. ``AIMConfig()``).
+    mechanism: The base mechanism config (e.g. ``AIMConfig()``).
     compress_columns: Domain compression config. True = all, list = specific.
     one_way_budget_fraction: Fraction of zCDP budget for one-way marginals.
     constraints: Default MBI constraints to enforce. Can be overridden at call
@@ -58,18 +52,12 @@ class DiscreteConfig(api.MechanismConfig):
   one_way_budget_fraction: float = 0.1
   constraints: Sequence[mbi.Constraint] = ()
 
-  def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
-    """Delegates to the inner mechanism's supporting_cliques."""
-    if not hasattr(self.mechanism, 'supporting_cliques'):
-      raise ValueError('Inner mechanism does not support supporting_cliques.')
-    return self.mechanism.supporting_cliques(domain)
-
   def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
     """Configures the synthesizer with a zCDP budget."""
     api.validate_max_records_per_user(max_records_per_user)
 
     one_way_rho = zcdp_rho * self.one_way_budget_fraction
-    remaining_rho = zcdp_rho - one_way_rho
+    remaining_rho = zcdp_rho * (1 - self.one_way_budget_fraction)
     inner = self.mechanism.configure(
         zcdp_rho=remaining_rho,
         delta=delta,
@@ -77,7 +65,7 @@ class DiscreteConfig(api.MechanismConfig):
     )
     return DiscreteMechanism(
         config=self,
-        inner=inner,
+        base_mechanism=inner,
         one_way_gdp_budget=accounting.zcdp_to_gdp(one_way_rho),
         max_records_per_user=max_records_per_user,
     )
@@ -88,7 +76,7 @@ class DiscreteMechanism(api.CalibratedMechanism):
   """Calibrated synthesizer: one-way + compress + inner + decompress."""
 
   config: DiscreteConfig
-  inner: api.CalibratedMechanism
+  base_mechanism: api.CalibratedMechanism
   one_way_gdp_budget: float
   max_records_per_user: int = 1
 
@@ -100,7 +88,7 @@ class DiscreteMechanism(api.CalibratedMechanism):
       noise_multiplier = accounting.gdp_gaussian_sigma(self.one_way_gdp_budget)
       events.append(dp_accounting.GaussianDpEvent(noise_multiplier))
 
-    inner_event = self.inner.dp_event
+    inner_event = self.base_mechanism.dp_event
     if isinstance(inner_event, dp_accounting.ComposedDpEvent):
       events.extend(inner_event.events)
     elif not isinstance(inner_event, dp_accounting.NoOpDpEvent):
@@ -162,11 +150,18 @@ class DiscreteMechanism(api.CalibratedMechanism):
         constraints,
     )
     # Compression only supported with mbi.Dataset, not mbi.CliqueVector.
-    if mappings and hasattr(data, 'compress'):
+    if mappings and isinstance(data, mbi.Dataset):
       data = data.compress(mappings)  # pyrefly: ignore[bad-argument-type]
       measurements = [m.compress(mappings, data.domain) for m in measurements]  # pyrefly: ignore[bad-argument-type]
 
-    result = self.inner(
+    cfg = self.config.mechanism
+    if isinstance(data, mbi.Dataset) and hasattr(cfg, 'supporting_cliques'):
+      cliques = cfg.supporting_cliques(data.domain)
+      data = mbi.CliqueVector.from_projectable(
+          data, cliques  # pyrefly: ignore[bad-argument-type]
+      )
+
+    result = self.base_mechanism(
         rng,
         data,
         initial_measurements=measurements,
