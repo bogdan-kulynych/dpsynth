@@ -111,6 +111,7 @@ def _select_two_way_marginal_queries(
     initial_marginal_queries: Sequence[tuple[str, ...]] = (),
     maximum_marginal_size: int = 10_000_000,
     max_records_per_user: int = 1,
+    pgm_iters: int = 2500,
 ) -> list[tuple[str, str]]:
   """Selects a set of two-way marginal queries with DP to form a spanning tree.
 
@@ -126,13 +127,14 @@ def _select_two_way_marginal_queries(
     maximum_marginal_size: The maximum size of a marginal query.
     max_records_per_user: The assumed maximum number of records a single user
       contributes; scales the sensitivity of the correlation quality scores.
+    pgm_iters: The maximum number of mirror descent iterations.
 
   Returns:
     A list of two-way marginal queries over highly correlated attributes.
   """
 
   independent_model = mbi.estimation.MirrorDescent().estimate(
-      data.domain, list(one_way_measurements), iters=2500
+      data.domain, list(one_way_measurements), iters=min(2500, pgm_iters)
   )
   independent_model = typing.cast(mbi.MarkovRandomField, independent_model)
 
@@ -217,6 +219,7 @@ class MST(api.CalibratedMechanism):
           measurements,
           maximum_marginal_size=self.config.maximum_marginal_size,
           max_records_per_user=self.max_records_per_user,
+          pgm_iters=self.config.pgm_iters,
       )
 
   def __call__(

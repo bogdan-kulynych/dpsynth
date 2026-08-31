@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import functools
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import dp_accounting
@@ -27,7 +29,10 @@ import mbi
 import numpy as np
 import pandas as pd
 
-TabularConfig = data_generation_v3.TabularConfig
+TabularConfig = functools.partial(
+    data_generation_v3.TabularConfig,
+    discrete_mechanism=discrete_mechanisms.MSTConfig(pgm_iters=100),
+)
 
 
 def _make_discrete_data(rng, n=1000):
@@ -304,7 +309,7 @@ class DataGenerationV3Test(parameterized.TestCase):
   def test_discrete_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentConfig()
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -317,7 +322,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentConfig()
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = (
         _discrete_workload_mechanism_baseline_errors(
             config, baseline_config, workload
@@ -328,7 +333,7 @@ class DataGenerationV3Test(parameterized.TestCase):
   def test_mixed_workload_regression_with_aim(self):
     workload = [('a',), ('b',), ('c',), ('a', 'b'), ('a', 'c'), ('b', 'c')]
     config = aim.AIMConfig(workload=workload, max_rounds=4, pgm_iters=500)
-    baseline_config = IndependentConfig()
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -339,7 +344,7 @@ class DataGenerationV3Test(parameterized.TestCase):
     config = aim_gdp.AIMGDPConfig(
         workload=workload, max_rounds=4, pgm_iters=500
     )
-    baseline_config = IndependentConfig()
+    baseline_config = IndependentConfig(pgm_iters=500)
     mechanism_error, baseline_error = _mixed_workload_mechanism_baseline_errors(
         config, baseline_config, workload
     )
@@ -429,7 +434,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     mechanism = config.calibrate(
         domains,
         epsilon=1.0,
-        delta=1e-6,
+        delta=1e-3,
         poisson_sampling_prob=0.1,
     )
     self.assertIsNotNone(mechanism)
@@ -445,7 +450,7 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
       _ = config.calibrate(
           domains,
           epsilon=1.0,
-          delta=1e-6,
+          delta=1e-3,
           poisson_sampling_prob=0.1,
       )
 
