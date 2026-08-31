@@ -17,6 +17,7 @@
 import os
 from absl.testing import absltest
 from absl.testing import parameterized
+import dp_accounting
 import dpsynth
 from dpsynth import data_generation_v3
 from dpsynth import domain
@@ -209,6 +210,64 @@ class SerializeTest(parameterized.TestCase):
     tmp_path = os.path.join(self.create_tempdir().full_path, 'top_level.yaml')
     dpsynth.to_yaml(config, tmp_path)
     self.assertEqual(dpsynth.from_yaml(tmp_path), config)
+
+  def test_zcdp_event_roundtrip(self):
+    event = dp_accounting.ZCDpEvent(rho=0.5)
+    yaml_str = serialize.to_yaml(event)
+    raw_dict = yaml.safe_load(yaml_str)
+    self.assertEqual(raw_dict['type'], 'ZCDpEvent')
+    self.assertEqual(raw_dict['rho'], 0.5)
+
+    loaded = serialize.from_yaml(yaml_str)
+    self.assertEqual(loaded, event)
+
+  def test_gaussian_dp_event_roundtrip(self):
+    event = dp_accounting.GaussianDpEvent(noise_multiplier=1.25)
+    yaml_str = serialize.to_yaml(event)
+    raw_dict = yaml.safe_load(yaml_str)
+    self.assertEqual(raw_dict['type'], 'GaussianDpEvent')
+    self.assertEqual(raw_dict['noise_multiplier'], 1.25)
+
+    loaded = serialize.from_yaml(yaml_str)
+    self.assertEqual(loaded, event)
+
+  def test_composed_dp_event_roundtrip(self):
+    event = dp_accounting.ComposedDpEvent([
+        dp_accounting.ZCDpEvent(rho=0.1),
+        dp_accounting.dp_event.EpsilonDeltaDpEvent(epsilon=0.0, delta=1e-5),
+    ])
+    yaml_str = serialize.to_yaml(event)
+    raw_dict = yaml.safe_load(yaml_str)
+    self.assertEqual(raw_dict['type'], 'ComposedDpEvent')
+    self.assertEqual(raw_dict['events'][0]['type'], 'ZCDpEvent')
+    self.assertEqual(raw_dict['events'][1]['type'], 'EpsilonDeltaDpEvent')
+
+    loaded = serialize.from_yaml(yaml_str)
+    self.assertEqual(loaded, event)
+
+  def test_self_composed_dp_event_roundtrip(self):
+    event = dp_accounting.SelfComposedDpEvent(
+        event=dp_accounting.GaussianDpEvent(noise_multiplier=1.5), count=10
+    )
+    yaml_str = serialize.to_yaml(event)
+    raw_dict = yaml.safe_load(yaml_str)
+    self.assertEqual(raw_dict['type'], 'SelfComposedDpEvent')
+    self.assertEqual(raw_dict['event']['type'], 'GaussianDpEvent')
+    self.assertEqual(raw_dict['count'], 10)
+
+    loaded = serialize.from_yaml(yaml_str)
+    self.assertEqual(loaded, event)
+
+  def test_mechanism_dp_event_roundtrip(self):
+    dom = {'col': domain.CategoricalAttribute(possible_values=['a', 'b'])}
+    config = data_generation_v3.TabularConfig(
+        discrete_mechanism=mst.MSTConfig(pgm_iters=100)
+    )
+    mech = config.calibrate(dom, epsilon=1.0, delta=1e-5)
+    event = mech.dp_event
+    yaml_str = dpsynth.to_yaml(event)
+    loaded = dpsynth.from_yaml(yaml_str)
+    self.assertEqual(loaded, event)
 
   def test_unknown_type_raises(self):
     with self.assertRaises(ValueError):

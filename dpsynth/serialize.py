@@ -21,6 +21,7 @@ import typing
 from typing import Any
 
 import cattrs
+import dp_accounting
 from dpsynth import api
 from dpsynth import domain
 from dpsynth.relational import domain as relational_domain
@@ -39,6 +40,12 @@ def _resolve_type(type_name: str) -> type[Any] | None:
     return getattr(domain, type_name)
   if hasattr(relational_domain, type_name):
     return getattr(relational_domain, type_name)
+  if hasattr(dp_accounting.dp_event, type_name):
+    candidate = getattr(dp_accounting.dp_event, type_name)
+    if isinstance(candidate, type) and issubclass(
+        candidate, dp_accounting.DpEvent
+    ):
+      return candidate
   return None
 
 
@@ -72,6 +79,14 @@ def _make_converter() -> cattrs.Converter:
       api.MechanismConfig,
       lambda obj: _unstructure_dataclass(obj.__class__, conv)(obj),
   )
+  conv.register_unstructure_hook(
+      dp_accounting.DpEvent,
+      lambda obj: _unstructure_dataclass(obj.__class__, conv)(obj),
+  )
+  conv.register_unstructure_hook_factory(
+      lambda cl: isinstance(cl, type) and issubclass(cl, dp_accounting.DpEvent),
+      lambda cl: _unstructure_dataclass(cl, conv),
+  )
 
   # 2. Polymorphic structuring for abstract base classes and unions
   conv.register_structure_hook(
@@ -79,6 +94,10 @@ def _make_converter() -> cattrs.Converter:
   )
   conv.register_structure_hook(
       domain.AttributeType,
+      lambda data, _: _structure_polymorphic(data, _, conv),
+  )
+  conv.register_structure_hook(
+      dp_accounting.DpEvent,
       lambda data, _: _structure_polymorphic(data, _, conv),
   )
 
