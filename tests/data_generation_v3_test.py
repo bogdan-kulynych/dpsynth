@@ -560,6 +560,24 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     result = calibrated(rng, df)
     self.assertNotIn('A', result.discrete_mechanism_result.mappings)
 
+  def test_use_jax_for_generation_and_bincount(self):
+    domains = {
+        'A': domain.CategoricalAttribute(possible_values=['a1', 'a2']),
+        'B': domain.CategoricalAttribute(possible_values=['b1', 'b2']),
+    }
+    df = pd.DataFrame({
+        'A': ['a1', 'a2'] * 10,
+        'B': ['b1', 'b2'] * 10,
+    })
+    rng = np.random.default_rng(0)
+    calibrated = TabularConfig(
+        use_jax_for_bincount=True,
+        use_jax_for_generation=True,
+    ).configure(domains, zcdp_rho=100.0)
+    result = calibrated(rng, df)
+    self.assertIsInstance(result.synthetic_data, pd.DataFrame)
+    self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
+
 
 if __name__ == '__main__':
   absltest.main()

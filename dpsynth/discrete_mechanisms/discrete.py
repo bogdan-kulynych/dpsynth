@@ -45,12 +45,18 @@ class DiscreteConfig(api.MechanismConfig):
     one_way_budget_fraction: Fraction of zCDP budget for one-way marginals.
     constraints: Default MBI constraints to enforce. Can be overridden at call
       time via the ``constraints`` kwarg on ``DiscreteMechanism.__call__``.
+    use_jax_for_bincount: Whether to use JAX-accelerated bincount (via
+      mbi.extensions.precompute_marginals) to compute marginals from Dataset.
+    use_jax_for_generation: Whether to use JAX-accelerated generation (via
+      mbi.extensions.synthetic_data) to generate synthetic data from the model.
   """
 
   mechanism: api.MechanismConfig = mst.MSTConfig()
   compress_columns: bool | Sequence[str] = False
   one_way_budget_fraction: float = 0.1
   constraints: Sequence[mbi.Constraint] = ()
+  use_jax_for_bincount: bool = False
+  use_jax_for_generation: bool = False
 
   def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
     """Configures the synthesizer with a zCDP budget."""
@@ -157,8 +163,10 @@ class DiscreteMechanism(api.CalibratedMechanism):
     cfg = self.config.mechanism
     if isinstance(data, mbi.Dataset) and hasattr(cfg, 'supporting_cliques'):
       cliques = cfg.supporting_cliques(data.domain)
-      data = mbi.CliqueVector.from_projectable(
-          data, cliques  # pyrefly: ignore[bad-argument-type]
+      data = common.precompute_marginals(
+          data,
+          cliques,  # pyrefly: ignore[bad-argument-type]
+          use_jax=self.config.use_jax_for_bincount,
       )
 
     result = self.base_mechanism(
@@ -167,10 +175,19 @@ class DiscreteMechanism(api.CalibratedMechanism):
         initial_measurements=measurements,
         constraints=constraints,
     )
-    if mappings:
-      result = dataclasses.replace(
-          result,
-          synthetic_data=result.synthetic_data.decompress(mappings),
-          mappings=mappings,
+    if result.synthetic_data is not None:
+      synthetic_data = result.synthetic_data
+    else:
+      synthetic_data = common.generate_synthetic_data(
+          result.model,
+          rng,
+          use_jax=self.config.use_jax_for_generation,
       )
-    return result
+    if mappings:
+      synthetic_data = synthetic_data.decompress(mappings)  # pyrefly: ignore[bad-argument-type]
+
+    return dataclasses.replace(
+        result,
+        synthetic_data=synthetic_data,
+        mappings=mappings,
+    )

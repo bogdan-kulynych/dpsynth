@@ -365,9 +365,7 @@ class AIMGDP(api.CalibratedMechanism):
             '[AIM] Increasing budget per round: %.5f', budget_per_round
         )
 
-    synthetic_data = model.synthetic_data()
     return common.DiscreteMechanismResult(
-        synthetic_data=synthetic_data,
         measurements=measurements,
         model=model,
         diagnostics=common.clique_stats(model),

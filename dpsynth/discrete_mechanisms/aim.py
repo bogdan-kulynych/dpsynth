@@ -285,9 +285,7 @@ class AIM(api.CalibratedMechanism):
         sigma = accounting.zcdp_gaussian_sigma((1 - fraction) * rho_per_round)
         logging.info('[AIM] Reducing sigma: %.1f', sigma)
 
-    synthetic_data = model.synthetic_data()
     return common.DiscreteMechanismResult(
-        synthetic_data=synthetic_data,
         measurements=measurements,
         model=model,
         diagnostics=common.clique_stats(model),

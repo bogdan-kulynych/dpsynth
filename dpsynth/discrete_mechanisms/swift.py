@@ -216,10 +216,7 @@ class SWIFT(api.CalibratedMechanism):
     synth_future.result()
     logging.info('[SWIFT] Synth precompile wait: %.2fs', time.time() - t0)
 
-    syn = mbi.extensions.synthetic_data(final_model, rows)  # pyrefly: ignore[bad-argument-type]
-    logging.info('[SWIFT] Generated %d synthetic records.', rows)
     return common.DiscreteMechanismResult(
-        synthetic_data=syn,
         measurements=measurements,
         model=final_model,
         diagnostics=common.clique_stats(final_model),

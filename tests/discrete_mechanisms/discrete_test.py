@@ -131,6 +131,33 @@ class DiscreteMechanismTest(absltest.TestCase):
       synth(np.random.default_rng(0), data)
       self.assertIsInstance(mock_call.call_args.args[1], mbi.CliqueVector)
 
+  def test_use_jax_for_generation(self):
+    config = DiscreteConfig(
+        mechanism=MSTConfig(pgm_iters=100),
+        use_jax_for_generation=True,
+    )
+    domain = mbi.Domain(['a', 'b'], [3, 4])
+    data = mbi.Dataset.synthetic(domain, N=200)
+    rng = np.random.default_rng(0)
+    synth = config.configure(zcdp_rho=100.0)
+    result = synth(rng, data)
+    self.assertEqual(result.synthetic_data.domain, domain)
+    self.assertEqual(result.synthetic_data.records, 200)
+
+  def test_use_jax_for_bincount_and_generation(self):
+    config = DiscreteConfig(
+        mechanism=MSTConfig(pgm_iters=100),
+        use_jax_for_bincount=True,
+        use_jax_for_generation=True,
+    )
+    domain = mbi.Domain(['a', 'b'], [3, 4])
+    data = mbi.Dataset.synthetic(domain, N=200)
+    rng = np.random.default_rng(0)
+    synth = config.configure(zcdp_rho=100.0)
+    result = synth(rng, data)
+    self.assertEqual(result.synthetic_data.domain, domain)
+    self.assertEqual(result.synthetic_data.records, 200)
+
 
 if __name__ == '__main__':
   absltest.main()

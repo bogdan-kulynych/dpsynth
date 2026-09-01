@@ -317,8 +317,10 @@ class TabularMechanism(api.CalibratedMechanism):
     cfg = self.config.discrete_mechanism
     if hasattr(cfg, 'supporting_cliques'):
       cliques = cfg.supporting_cliques(discrete.domain)
-      discrete = mbi.CliqueVector.from_projectable(
-          discrete, cliques  # pyrefly: ignore[bad-argument-type]
+      discrete = dm_common.precompute_marginals(
+          discrete,
+          cliques,  # pyrefly: ignore[bad-argument-type]
+          use_jax=self.config.use_jax_for_bincount,
       )
 
     mechanism_result = self.base_mechanism(
@@ -329,13 +331,25 @@ class TabularMechanism(api.CalibratedMechanism):
     )
     logging.info('[DPSynth]: Generated discrete synthetic data.')
 
-    synthetic_discrete = mechanism_result.synthetic_data
+    if mechanism_result.synthetic_data is not None:
+      synthetic_discrete = mechanism_result.synthetic_data
+    else:
+      synthetic_discrete = dm_common.generate_synthetic_data(
+          mechanism_result.model,
+          rng,
+          use_jax=self.config.use_jax_for_generation,
+      )
     if mappings:
-      synthetic_discrete = synthetic_discrete.decompress(mappings)
+      synthetic_discrete = synthetic_discrete.decompress(mappings)  # pyrefly: ignore[bad-argument-type]
       mechanism_result = dataclasses.replace(
           mechanism_result,
           synthetic_data=synthetic_discrete,
           mappings=mappings,
+      )
+    else:
+      mechanism_result = dataclasses.replace(
+          mechanism_result,
+          synthetic_data=synthetic_discrete,
       )
 
     synthetic_data = codec.decode(synthetic_discrete, rng, column_order)
@@ -368,6 +382,10 @@ class TabularConfig(api.MechanismConfig):
     cross_attribute_constraints: Constraints to enforce on generated data.
     compress_columns: Whether to compress rare categories (< 3*sigma) for
       CategoricalAttribute columns not present in constraints.
+    use_jax_for_bincount: Whether to use JAX-accelerated bincount (via
+      mbi.extensions.precompute_marginals) to compute marginals from Dataset.
+    use_jax_for_generation: Whether to use JAX-accelerated generation (via
+      mbi.extensions.synthetic_data) to generate synthetic data from the model.
   """
 
   domains: Mapping[str, domain.AttributeType] | None = None
@@ -376,6 +394,8 @@ class TabularConfig(api.MechanismConfig):
   init_budget_fraction: float = 0.1
   cross_attribute_constraints: Sequence[constraints.Constraint] = ()
   compress_columns: bool = False
+  use_jax_for_bincount: bool = False
+  use_jax_for_generation: bool = False
 
   def _compute_per_col_deltas(self, domains, delta):
     # Split delta across open-set columns, analogous to splitting zcdp_rho.

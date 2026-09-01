@@ -40,6 +40,7 @@ import dp_accounting
 from dpsynth import api
 from dpsynth import data_generation_v3
 from dpsynth import domain
+from dpsynth.discrete_mechanisms import common as dm_common
 from dpsynth.local_mode import initialization
 from dpsynth.local_mode import primitives
 import mbi
@@ -409,12 +410,21 @@ def generate_from_marginals(
       data=marginals,
       initial_measurements=initial_measurements,
   )
-  synthetic_data = codec.decode(
-      mechanism_result.synthetic_data, rng, column_order
-  )
+  if mechanism_result.synthetic_data is not None:
+    synthetic_discrete = mechanism_result.synthetic_data
+  else:
+    synthetic_discrete = dm_common.generate_synthetic_data(
+        mechanism_result.model,
+        rng,
+        use_jax=synth.config.use_jax_for_generation,
+    )
+  synthetic_data = codec.decode(synthetic_discrete, rng, column_order)
   return data_generation_v3.DataGenerationResult(
       synthetic_data=synthetic_data,
-      discrete_mechanism_result=mechanism_result,
+      discrete_mechanism_result=dataclasses.replace(
+          mechanism_result,
+          synthetic_data=synthetic_discrete,
+      ),
       codec=codec,
   )
 

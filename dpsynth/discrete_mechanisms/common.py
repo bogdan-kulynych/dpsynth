@@ -135,7 +135,7 @@ class DiscreteMechanismResult:
   """
 
   model: mbi.Model
-  synthetic_data: mbi.Dataset
+  synthetic_data: mbi.Dataset | None = None
   measurements: list[mbi.LinearMeasurement] = dataclasses.field(
       default_factory=list
   )
@@ -143,6 +143,40 @@ class DiscreteMechanismResult:
   mappings: dict[str | int, np.ndarray] = dataclasses.field(
       default_factory=dict
   )
+
+
+def precompute_marginals(
+    data: mbi.Dataset,
+    cliques: Sequence[mbi.Clique],
+    *,
+    use_jax: bool = False,
+) -> mbi.CliqueVector:
+  """Computes marginals over cliques from a dataset, optionally using JAX."""
+  if use_jax:
+    return mbi.extensions.precompute_marginals(
+        data, cliques  # pyrefly: ignore[bad-argument-type]
+    )
+  return mbi.CliqueVector.from_projectable(
+      data, cliques  # pyrefly: ignore[bad-argument-type]
+  )
+
+
+def generate_synthetic_data(
+    model: mbi.Model,
+    rng: np.random.Generator,
+    *,
+    use_jax: bool = False,
+    rows: int | None = None,
+) -> mbi.Dataset:
+  """Generates synthetic data from a fitted model."""
+  if rows is None:
+    rows = max(1, int(round(model.total)))  # pyrefly: ignore[bad-argument-type]
+  if use_jax and isinstance(model, mbi.MarkovRandomField):
+    seed = int(rng.integers(0, 2**31 - 1))
+    return mbi.extensions.synthetic_data(
+        model, rows=rows, seed=seed  # pyrefly: ignore[bad-argument-type]
+    )
+  return model.synthetic_data(rows=rows)
 
 
 def compression_mappings(
@@ -386,9 +420,9 @@ def supporting_cliques(
   if workload is None:
     cliques = list(itertools.combinations(domain.attributes, 3))
   elif isinstance(workload, Mapping):
-    cliques = list(workload.keys())
+    cliques = [tuple(cl) for cl in workload.keys()]
   else:
-    cliques = list(workload)
+    cliques = [tuple(cl) for cl in workload]
   cliques = mbi.clique_utils.downward_closure(cliques)
   cliques = [cl for cl in cliques if domain.size(cl) <= max_marginal_size]
   return mbi.clique_utils.maximal_subset(cliques)
@@ -400,7 +434,7 @@ def one_way_cliques(
   """Returns one-way cliques from the workload, or all columns if None."""
   if workload is None:
     return [(col,) for col in domain]
-  return [cl for cl in workload if len(cl) == 1]
+  return [tuple(cl) for cl in workload if len(cl) == 1]
 
 
 def compiled_workload(
@@ -425,7 +459,7 @@ def compiled_workload(
     workload = list(itertools.combinations(domain.attributes, 3))
 
   if not isinstance(workload, Mapping):
-    workload = {cl: 1.0 for cl in workload}
+    workload = {tuple(cl): 1.0 for cl in workload}
 
   dc = list(downward_closure(workload.keys()))
 

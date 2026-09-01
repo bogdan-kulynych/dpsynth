@@ -92,6 +92,36 @@ class CommonTest(absltest.TestCase):
     )
     self.assertIn(("a", "b"), cliques)
     self.assertNotIn(("a", "d"), cliques)
+    # Workload with lists instead of tuples.
+    cliques = common.supporting_cliques(domain, [["a", "b"], ["c", "d"]])
+    self.assertCountEqual(cliques, [("a", "b"), ("c", "d")])
+    for cl in cliques:
+      self.assertIsInstance(cl, tuple)
+
+  def test_compiled_workload_with_lists(self):
+    domain = mbi.Domain(["a", "b"], [3, 3])
+    workload = common.compiled_workload(domain, [["a", "b"]])
+    self.assertIn(("a", "b"), workload)
+    for cl in workload.keys():
+      self.assertIsInstance(cl, tuple)
+
+  def test_precompute_marginals_standard_and_jax(self):
+    domain = mbi.Domain(["a", "b"], [3, 4])
+    data = mbi.Dataset.synthetic(domain, N=100)
+    cliques = [("a",), ("a", "b")]
+
+    result_standard = common.precompute_marginals(data, cliques, use_jax=False)
+    self.assertIsInstance(result_standard, mbi.CliqueVector)
+    self.assertEqual(result_standard.domain, domain)
+
+    result_jax = common.precompute_marginals(data, cliques, use_jax=True)
+    self.assertIsInstance(result_jax, mbi.CliqueVector)
+    self.assertEqual(result_jax.domain, domain)
+
+    for cl in cliques:
+      np.testing.assert_allclose(
+          result_standard[cl].datavector(), result_jax[cl].datavector()
+      )
 
 
 if __name__ == "__main__":

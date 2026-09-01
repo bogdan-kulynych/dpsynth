@@ -267,9 +267,7 @@ class MST(api.CalibratedMechanism):
       )
       assert isinstance(model, mbi.MarkovRandomField)
 
-    synthetic_data = model.synthetic_data()
     return common.DiscreteMechanismResult(
-        synthetic_data=synthetic_data,
         measurements=measurements,
         model=model,
         diagnostics=common.clique_stats(model),

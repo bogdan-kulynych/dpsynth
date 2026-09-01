@@ -72,9 +72,7 @@ class Independent(api.CalibratedMechanism):
           constraints=constraints,
       )
 
-    synthetic_data = model.synthetic_data()
     return common.DiscreteMechanismResult(
-        synthetic_data=synthetic_data,
         measurements=measurements,
         model=model,
         diagnostics=common.clique_stats(model),
