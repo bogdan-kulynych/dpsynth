@@ -16,10 +16,13 @@ name: Unittests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check-lockfile:
@@ -27,9 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check if pyproject.toml was modified
         id: check_pyproject
         env:
@@ -49,7 +53,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "pyproject.toml was not modified. Skipping lockfile sync check."
           fi
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         if: steps.check_pyproject.outputs.changed == 'true'
         with:
           enable-cache: true
@@ -76,21 +80,23 @@ jobs:
       cancel-in-progress: true
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-    # Install deps
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
+      # Install deps
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
 
-    - uses: astral-sh/setup-uv@v5
-      with:
-        enable-cache: true
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
 
-    - name: Install dependencies
-      run: |
-        uv pip install --system -r pylock.toml
-        uv pip install --system -e .
+      - name: Install dependencies
+        run: |
+          uv pip install --system -r pylock.toml
+          uv pip install --system -e .
 
-    - name: Run core tests
-      run: pytest -vv -n auto --import-mode=importlib
+      - name: Run core tests
+        run: pytest -vv -n auto --import-mode=importlib
