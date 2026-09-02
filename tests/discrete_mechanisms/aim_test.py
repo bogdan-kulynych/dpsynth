@@ -129,8 +129,7 @@ class AIMTest(absltest.TestCase):
         workload=workload, max_rounds=4, pgm_iters=500
     )
 
-    # Same effectively-noiseless budget as the sibling tests, in GDP mu units.
-    calibrated = config.configure(gdp_mu=accounting.zcdp_to_gdp(10000) ** 0.5)
+    calibrated = config.configure(gdp_budget=20000.0)
     result = calibrated(np.random.default_rng(0), data)
 
     self.assertIsInstance(result, common.DiscreteMechanismResult)
@@ -146,27 +145,40 @@ class AIMTest(absltest.TestCase):
         workload=workload, max_rounds=4, pgm_iters=500
     )
     baseline_config = independent.IndependentConfig()
-    # mu^2 = 2 * rho matches the budget the baseline is given.
+    # mu^2 = 10 is the GDP budget matching the baseline's default rho = 5.
     mechanism_error, baseline_error = (
         _correlated_workload_mechanism_baseline_errors(
-            config.configure(gdp_mu=accounting.zcdp_to_gdp(5.0) ** 0.5),
-            baseline_config,
-            workload,
+            config.configure(gdp_budget=10.0), baseline_config, workload
         )
     )
     self.assertLess(mechanism_error, 0.05 * baseline_error)
 
-  def test_aim_gdp_acc_budget_can_be_set_in_mu(self):
+  def test_aim_gdp_acc_budget_can_be_set_on_configure(self):
     config = aim_gdp_acc.AimGdpAccConfig()
 
-    calibrated = config.configure(gdp_mu=3.0)
+    calibrated = config.configure(gdp_budget=9.0)
 
-    self.assertEqual(calibrated.gdp_mu, 3.0)
+    self.assertEqual(calibrated.gdp_budget, 9.0)
     self.assertEqual(calibrated.dp_event.noise_multiplier, 1 / 3.0)
 
-  def test_aim_gdp_acc_requires_gdp_mu_and_rejects_zcdp_rho(self):
+  def test_aim_gdp_acc_budget_can_be_set_on_config(self):
+    config = aim_gdp_acc.AimGdpAccConfig(gdp_budget=9.0)
+
+    calibrated = config.configure()
+
+    self.assertEqual(calibrated.gdp_budget, 9.0)
+    self.assertEqual(calibrated.dp_event.noise_multiplier, 1 / 3.0)
+
+  def test_aim_gdp_acc_configure_argument_overrides_config(self):
+    config = aim_gdp_acc.AimGdpAccConfig(gdp_budget=9.0)
+
+    self.assertEqual(config.configure(gdp_budget=4.0).gdp_budget, 4.0)
+
+  def test_aim_gdp_acc_requires_gdp_budget_and_rejects_zcdp_rho(self):
     with self.assertRaises(ValueError):
       aim_gdp_acc.AimGdpAccConfig().configure(zcdp_rho=1.0)
+    with self.assertRaises(ValueError):
+      aim_gdp_acc.AimGdpAccConfig().configure(gdp_budget=1.0, delta=1e-5)
     with self.assertRaises(ValueError):
       aim_gdp_acc.AimGdpAccConfig().configure()
 
@@ -179,7 +191,7 @@ class AIMTest(absltest.TestCase):
 
     gdp_acc_config = aim_gdp_acc.AimGdpAccConfig()
     self.assertEqual(gdp_acc_config.pgm_iters, 1000)
-    self.assertIsNone(gdp_acc_config.gdp_mu)
+    self.assertIsNone(gdp_acc_config.gdp_budget)
 
 
 class BoundedRangeGdpAccountingTest(absltest.TestCase):
@@ -212,7 +224,7 @@ class BoundedRangeGdpAccountingTest(absltest.TestCase):
         epsilon=eps, delta=delta
     )
     self.assertLessEqual(
-        accounting.gdp_delta(calibrated.gdp_mu, eps), delta + 1e-12
+        accounting.gdp_delta(calibrated.gdp_budget**0.5, eps), delta + 1e-12
     )
 
 

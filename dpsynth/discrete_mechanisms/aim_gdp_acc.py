@@ -49,8 +49,8 @@ class AimGdpAccConfig(api.MechanismConfig):
       anneal_factor: The factor by which to anneal the privacy.
       select_budget_fraction: The fraction of the total budget to use for
         selecting two-way marginal queries.
-      gdp_mu: If set, the total privacy budget as a GDP mu, used directly instead
-        of converting a zCDP budget. `configure` then rejects `zcdp_rho`.
+      gdp_budget: If set, the total privacy budget as a GDP mu^2, used as the
+        default when `configure` is called without an explicit `gdp_budget`.
     """
 
     workload: Mapping[mbi.Clique, float] | Iterable[mbi.Clique] | None = None
@@ -61,7 +61,7 @@ class AimGdpAccConfig(api.MechanismConfig):
     select_budget_fraction: float = 0.1
     pgm_iters: int = 1000
     marginal_oracle: mbi.MarginalOracle | None = None
-    gdp_mu: float | None = None
+    gdp_budget: float | None = None
 
     def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
         """Returns the workload cliques filtered by max_marginal_size."""
@@ -71,25 +71,27 @@ class AimGdpAccConfig(api.MechanismConfig):
         self,
         _=None,
         *,
-        gdp_mu=None,
+        gdp_budget=None,
         zcdp_rho=None,
         delta=0,
         max_records_per_user=1,
     ):
-        """Set GDP, for compatibility with the interface."""
+        """Set the GDP budget, for compatibility with the interface."""
         api.validate_max_records_per_user(max_records_per_user)
         if zcdp_rho is not None:
             raise ValueError(
                 f"This mechanism takes no zCDP budget, got zcdp_rho={zcdp_rho}."
-                " Pass gdp_mu instead."
+                " Pass gdp_budget instead."
             )
         if delta:
             raise ValueError(f"This mechanism consumes no delta, got delta={delta}.")
-        if gdp_mu is None:
-            raise ValueError("gdp_mu must be given.")
+        if gdp_budget is None:
+            gdp_budget = self.gdp_budget
+        if gdp_budget is None:
+            raise ValueError("gdp_budget must be given.")
         return AimGdpAcc(
             config=self,
-            gdp_mu=gdp_mu,
+            gdp_budget=gdp_budget,
             max_records_per_user=max_records_per_user,
         )
 
@@ -124,7 +126,7 @@ class AimGdpAccConfig(api.MechanismConfig):
         if poisson_sampling_prob != 1.0:
             raise NotImplementedError("Poisson subsampling is not supported.")
         return self.configure(
-            gdp_mu=accounting.gdp_mu(epsilon, delta),
+            gdp_budget=accounting.gdp_mu(epsilon, delta) ** 2,
             max_records_per_user=max_records_per_user,
         )
 
@@ -134,13 +136,15 @@ class AimGdpAcc(api.CalibratedMechanism):
     """Calibrated AimGdpAcc instance."""
 
     config: AimGdpAccConfig
-    gdp_mu: float
+    gdp_budget: float
     max_records_per_user: int = 1
 
     @property
     def dp_event(self) -> dp_accounting.DpEvent:
         """Returns the DP event for the mechanism."""
-        return dp_accounting.GaussianDpEvent(1.0 / self.gdp_mu)
+        return dp_accounting.GaussianDpEvent(
+            accounting.gdp_gaussian_sigma(self.gdp_budget)
+        )
 
     def __call__(
         self,
@@ -154,7 +158,7 @@ class AimGdpAcc(api.CalibratedMechanism):
         measurements = list(initial_measurements) if initial_measurements else []
         phase_times = {}
         logging.info("[AIM-GDP-ACC]: Starting Mechanism.")
-        gdp_musq = self.gdp_mu**2
+        gdp_musq = self.gdp_budget
         terminate = False
         musq_remaining = gdp_musq
         max_rounds = self.config.max_rounds or 16 * len(data.domain)
