@@ -28,6 +28,8 @@ from dpsynth.discrete_mechanisms.aim import AIM
 from dpsynth.discrete_mechanisms.aim import AIMConfig
 from dpsynth.discrete_mechanisms.aim_gdp import AIMGDP
 from dpsynth.discrete_mechanisms.aim_gdp import AIMGDPConfig
+from dpsynth.discrete_mechanisms.aim_gdp_acc import AimGdpAcc
+from dpsynth.discrete_mechanisms.aim_gdp_acc import AimGdpAccConfig
 from dpsynth.discrete_mechanisms.common import DiscreteMechanismResult
 from dpsynth.discrete_mechanisms.common import MechanismDiagnostics
 from dpsynth.discrete_mechanisms.direct import Direct

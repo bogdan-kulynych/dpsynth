@@ -23,6 +23,8 @@ using the dp_accounting library.
 
 import math
 
+import scipy.stats
+
 
 def zcdp_delta(rho: float, eps: float) -> float:
   """Return the minimum value of delta such that rho-zCDP implies (epsilon, delta)-DP."""
@@ -102,3 +104,62 @@ def zcdp_to_gdp(rho: float) -> float:
   """Return the largest GDP budget (mu^2) such that mu-GDP implies rho-zCDP."""
   # rho = 0.5 / sigma^2 = 0.5 * budget
   return 2 * rho
+
+
+def gdp_delta(mu: float, eps: float) -> float:
+  """Return the minimum value of delta such that mu-GDP implies (eps, delta)-DP."""
+  assert mu >= 0
+  assert eps >= 0
+  if mu == 0:
+    return 0.0
+  return scipy.stats.norm.cdf(-eps / mu + mu / 2) - math.exp(
+      eps
+  ) * scipy.stats.norm.cdf(-eps / mu - mu / 2)
+
+
+def gdp_mu(eps: float, delta: float) -> float:
+  """Return the maximum value of mu such that mu-GDP implies (eps, delta)-DP."""
+  assert eps >= 0
+  assert delta > 0
+  if delta >= 1:
+    return math.inf
+  mumin, mumax = 0.0, 1.0
+  while gdp_delta(mumax, eps) <= delta:
+    mumax *= 2
+  while mumax - mumin > 1e-10:
+    mu = (mumin + mumax) / 2
+    if gdp_delta(mu, eps) <= delta:
+      mumin = mu
+    else:
+      mumax = mu
+  return mumin
+
+
+def gdp_bounded_range_musq(nu: float) -> float:
+  """Return the squared GDP parameter mu^2 of a bounded range mechanism.
+
+  A mechanism with bounded range parameter nu satisfies mu-GDP for
+  mu = -2 * Phi^{-1}(1 / (exp(nu / 2) + 1)).
+
+  Args:
+    nu: The bounded range parameter of the mechanism.
+  """
+  assert nu >= 0
+  mu = -2.0 * scipy.stats.norm.ppf(1.0 / (math.exp(nu / 2.0) + 1.0))
+  return mu**2
+
+
+def gdp_bounded_range_nu(musq: float) -> float:
+  """Return the largest bounded range parameter nu that satisfies mu-GDP.
+
+  This is the inverse of `gdp_bounded_range_musq`, given by nu = 2 * L(mu)
+  with L(t) = log(Phi(t / 2) / Phi(-t / 2)).
+
+  Args:
+    musq: The GDP budget mu^2 to spend on the bounded range mechanism.
+  """
+  assert musq >= 0
+  mu = math.sqrt(musq)
+  return 2.0 * math.log(
+      scipy.stats.norm.cdf(mu / 2.0) / scipy.stats.norm.cdf(-mu / 2.0)
+  )
