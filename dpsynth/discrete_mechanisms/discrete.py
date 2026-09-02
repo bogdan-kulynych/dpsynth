@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 
+from absl import logging
 import dp_accounting
 from dpsynth import api
 from dpsynth.discrete_mechanisms import accounting
@@ -155,10 +156,10 @@ class DiscreteMechanism(api.CalibratedMechanism):
         self.config.compress_columns,
         constraints,
     )
-    # Compression only supported with mbi.Dataset, not mbi.CliqueVector.
     if mappings and isinstance(data, mbi.Dataset):
       data = data.compress(mappings)  # pyrefly: ignore[bad-argument-type]
       measurements = [m.compress(mappings, data.domain) for m in measurements]  # pyrefly: ignore[bad-argument-type]
+    logging.info('[DPSynth]: Compressed discrete domain:\n%s', data.domain)
 
     cfg = self.config.mechanism
     if isinstance(data, mbi.Dataset) and hasattr(cfg, 'supporting_cliques'):

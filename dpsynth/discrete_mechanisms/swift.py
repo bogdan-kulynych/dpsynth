@@ -67,6 +67,8 @@ class SWIFTConfig(api.MechanismConfig):
   pgm_iters: int = 10_000
   marginal_oracle: mbi.MarginalOracle | None = None
   select_budget_frac: float = 0.1
+  use_jax_for_bincount: bool = True
+  use_jax_for_generation: bool = True
 
   def supporting_cliques(self, domain: mbi.Domain) -> list[mbi.Clique]:
     """Returns the workload cliques filtered by max_marginal_size."""
@@ -123,9 +125,6 @@ class SWIFT(api.CalibratedMechanism):
       )
     logging.info('[SWIFT] %d candidates.', len(candidates))
 
-    with common.timed(phase_times, 'from_projectable'):
-      answers = mbi.CliqueVector.from_projectable(data, candidates)  # pyrefly: ignore[bad-argument-type]
-
     with common.timed(phase_times, 'initial_mirror_descent'):
       estimator = mbi.estimation.MirrorDescent(self.config.marginal_oracle)
       model = estimator.estimate(
@@ -143,7 +142,7 @@ class SWIFT(api.CalibratedMechanism):
       with common.timed(phase_times, 'compute_initial_errors'):
         noisy_errors = _compute_initial_errors(
             rng,
-            answers,  # pyrefly: ignore[bad-argument-type]
+            data,
             model,  # pyrefly: ignore[bad-argument-type]
             list(candidates),
             select_gdp_budget,
@@ -165,9 +164,10 @@ class SWIFT(api.CalibratedMechanism):
     ########################################################
     # Precompile MirrorDescent + synth while measuring.    #
     ########################################################
-    closed_oracle = functools.partial(
-        mbi.marginal_oracles.message_passing_stable, jtree=jtree
+    oracle = self.config.marginal_oracle or mbi.marginal_oracles.default_oracle(
+        all_cliques, data.domain, has_constraints=bool(constraints)
     )
+    closed_oracle = functools.partial(oracle, jtree=jtree)
     estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)
     rows = mbi.estimation.minimum_variance_unbiased_total(initial_measurements)  # pyrefly: ignore[bad-argument-type]
     rows = int(max(rows, 1))
@@ -187,7 +187,7 @@ class SWIFT(api.CalibratedMechanism):
       logging.info('[SWIFT] Starting measurements.')
       new_measurements = _measure_selected_marginals(
           rng,
-          answers,
+          data,
           selected,
           measure_gdp_budget,
           max_records_per_user=self.max_records_per_user,
@@ -203,6 +203,15 @@ class SWIFT(api.CalibratedMechanism):
       pgm_future.result()
       logging.info('[SWIFT] PGM precompile wait: %.2fs', time.time() - t0)
 
+      all_cliques = list(jtree.nodes)
+      oracle = (
+          self.config.marginal_oracle
+          or mbi.marginal_oracles.default_oracle(
+              all_cliques, data.domain, has_constraints=bool(constraints)
+          )
+      )
+      closed_oracle = functools.partial(oracle, jtree=jtree)
+      estimator = mbi.estimation.MirrorDescent(marginal_oracle=closed_oracle)
       final_model = estimator.estimate(
           data.domain,
           measurements,
@@ -216,7 +225,15 @@ class SWIFT(api.CalibratedMechanism):
     synth_future.result()
     logging.info('[SWIFT] Synth precompile wait: %.2fs', time.time() - t0)
 
+    synthetic_data = common.generate_synthetic_data(
+        final_model,
+        rng,
+        use_jax=self.config.use_jax_for_generation,
+        rows=rows,
+    )
+
     return common.DiscreteMechanismResult(
+        synthetic_data=synthetic_data,
         measurements=measurements,
         model=final_model,
         diagnostics=common.clique_stats(final_model),

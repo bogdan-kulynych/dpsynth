@@ -578,6 +578,19 @@ class MaxRecordsPerUserTest(parameterized.TestCase):
     self.assertIsInstance(result.synthetic_data, pd.DataFrame)
     self.assertListEqual(result.synthetic_data.columns.tolist(), ['A', 'B'])
 
+  def test_mbi_callbacks_logging_configured(self):
+    if not hasattr(mbi, 'callbacks') or not hasattr(
+        mbi.callbacks, 'set_log_fn'
+    ):
+      self.skipTest(
+          'mbi.callbacks.set_log_fn not supported in this mbi version'
+      )
+    import dpsynth  # pylint: disable=g-import-not-at-top,unused-import
+
+    with self.assertLogs(level='INFO') as logs:
+      mbi.callbacks.log('test', 'message', sep=' | ')
+    self.assertTrue(any('test | message' in output for output in logs.output))
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -313,6 +313,7 @@ class TabularMechanism(api.CalibratedMechanism):
           m.compress(mappings, discrete.domain)  # pyrefly: ignore[bad-argument-type]
           for m in initial_measurements
       ]
+    logging.info('[DPSynth]: Compressed discrete domain:\n%s', discrete.domain)
 
     cfg = self.config.discrete_mechanism
     if hasattr(cfg, 'supporting_cliques'):
