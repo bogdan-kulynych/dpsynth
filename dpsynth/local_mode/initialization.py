@@ -28,22 +28,34 @@ import numpy as np
 import scipy.stats
 
 
-def encode_to_grid(values, lower, upper, delta, **_):
+def encode_to_grid(values, lower, upper, delta, attribute=None, **_):
   """Maps finite value(s) to quantile-grid index/indices in [0, grid_size - 1].
 
   Clipping to ``[lower, upper]`` folds out-of-grid values into the boundary bins
   and guarantees the returned index stays in range. Polymorphic over scalars and
-  NumPy arrays; callers must handle NaN / out-of-domain filtering beforehand.
+  NumPy arrays; if ``attribute`` is provided, applies its ``standardize``
+  semantics in a vectorized manner first.
 
   Args:
-    values: A finite scalar or NumPy array of standardized numerical values.
+    values: A scalar or sequence/array of numerical values.
     lower: The inclusive lower bound of the candidate grid.
     upper: The inclusive upper bound of the candidate grid.
     delta: The spacing between adjacent grid points.
+    attribute: Optional ``NumericalAttribute`` used to standardize ``values``.
 
   Returns:
     The nearest grid index (or array of indices) as ``np.int64``.
   """
+  if attribute is not None:
+    values = np.asarray(values, dtype=float)
+    if attribute.clip_to_range:
+      values = np.where(np.isnan(values), attribute.min_value, values)
+    elif values.ndim > 0:
+      values = values[
+          (values >= attribute.min_value) & (values <= attribute.max_value)
+      ]
+    if attribute.dtype == 'int':
+      values = np.round(values)
   clamped = np.clip(values, lower, upper)
   return np.round((clamped - lower) / delta).astype(np.int64)
 
@@ -196,19 +208,9 @@ class NumericalInitializer(api.CalibratedMechanism):
 
   def _grid_histogram(self, data):
     """Returns the quantile candidate-grid histogram (length grid_size)."""
-    # Applies NumericalAttribute.standardize semantics in a vectorized manner.
     lower, upper, gs = self.grid_spec
     delta = (upper - lower) / (gs - 1)
-    attr = self.attribute
-    values = np.asarray(data, dtype=float)
-    if attr.clip_to_range:
-      values = np.where(np.isnan(values), attr.min_value, values)
-    else:
-      in_domain = (values >= attr.min_value) & (values <= attr.max_value)
-      values = values[in_domain]
-    if attr.dtype == 'int':
-      values = np.round(values)
-    indices = encode_to_grid(values, lower, upper, delta)
+    indices = encode_to_grid(data, lower, upper, delta, self.attribute)
     return np.bincount(indices, minlength=gs)
 
   def from_summary(

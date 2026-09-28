@@ -130,7 +130,11 @@ class TabularCodec:
       domains: domain.Schema | Mapping[str, domain.AttributeType],
   ) -> TabularCodec:
     """Builds a codec from initialization results and the original domains."""
-    columns = {col: ColumnCodec(m, domains[col]) for col, m in results.items()}
+    columns = {
+        col: ColumnCodec(results[col], domains[col])
+        for col in domains
+        if col in results
+    }
     return cls(columns=columns)
 
   @property
@@ -177,12 +181,13 @@ class TabularCodec:
       self,
       synthetic: mbi.Dataset,
       rng: np.random.Generator,
-      column_order: Sequence[str],
+      column_order: Sequence[str] | None = None,
   ) -> pd.DataFrame:
     """Decodes synthetic discrete data back to a DataFrame."""
     ids = synthetic.to_dict()
-    decoded = {col: c.decode(ids[col], rng) for col, c in self.columns.items()}
-    return pd.DataFrame(decoded)[list(column_order)]
+    cols = self.columns if column_order is None else column_order
+    decoded = {col: self.columns[col].decode(ids[col], rng) for col in cols}
+    return pd.DataFrame(decoded)
 
 
 @dataclasses.dataclass
@@ -237,6 +242,7 @@ class TabularMechanism(api.CalibratedMechanism):
       data: pd.DataFrame,
       *,
       cross_attribute_constraints: Sequence[constraints.Constraint] = (),
+      num_rows: int | None = None,
   ) -> DataGenerationResult:
     """Generates differentially private synthetic data.
 
@@ -245,6 +251,8 @@ class TabularMechanism(api.CalibratedMechanism):
       data: The dataset to generate synthetic data for. Must contain all columns
         specified in ``schema``.
       cross_attribute_constraints: Constraints to enforce on generated data.
+      num_rows: Optional number of synthetic rows to generate. Defaults to the
+        fitted model's noisy total count.
 
     Returns:
       A DataGenerationResult containing the synthetic DataFrame.
@@ -257,12 +265,6 @@ class TabularMechanism(api.CalibratedMechanism):
         raise ValueError(
             f'{col=} not found in dataset. Available: {list(data.columns)}'
         )
-    if not cross_attribute_constraints:
-      cross_attribute_constraints = (
-          self.schema.constraints or self.config.cross_attribute_constraints
-      )
-
-    mbi_constraints = tuple(c.to_mbi() for c in cross_attribute_constraints)
 
     # Phase 1: Per-column initialization.
     # Measure total count first, then run per-column initializers.
@@ -300,49 +302,73 @@ class TabularMechanism(api.CalibratedMechanism):
     logging.info('[DPSynth]: Finished encoding data.')
 
     # Phase 3: Run the discrete mechanism and decode back to the input domain.
+    return self.from_summary(
+        rng,
+        results,
+        discrete,
+        total_measurement,
+        cross_attribute_constraints=cross_attribute_constraints,
+        num_rows=num_rows,
+    )
+
+  def from_summary(
+      self,
+      rng: np.random.Generator,
+      column_measurements: Mapping[str, initialization.ColumnMeasurement],
+      data: mbi.Dataset | mbi.CliqueVector,
+      total_measurement: mbi.LinearMeasurement,
+      *,
+      cross_attribute_constraints: Sequence[constraints.Constraint] = (),
+      num_rows: int | None = None,
+  ) -> DataGenerationResult:
+    """Runs the discrete mechanism and decoding from initialized measurements."""
+    if not cross_attribute_constraints:
+      cross_attribute_constraints = (
+          self.schema.constraints or self.config.cross_attribute_constraints
+      )
+    mbi_constraints = tuple(c.to_mbi() for c in cross_attribute_constraints)
+
     # Feed the noisy total (clique ()) and one-way column measurements as
     # initial measurements so the mechanism does not re-measure them.
-    column_order = [col for col in data.columns if col in self.schema]
+    codec = TabularCodec.from_measurements(column_measurements, self.schema)
     one_way_measurements = codec.one_way_measurements()
     initial_measurements = [total_measurement, *one_way_measurements]
 
-    if self.config.compress_columns:
-      candidate_cols = [
-          col
-          for col in self.schema
-          if isinstance(self.schema[col], domain.CategoricalAttribute)
-      ]
+    mappings = {}
+    if isinstance(data, mbi.Dataset):
+      if self.config.compress_columns:
+        candidate_cols = [
+            col
+            for col in self.schema
+            if isinstance(self.schema[col], domain.CategoricalAttribute)
+        ]
+        mappings = dm_common.compression_mappings(
+            one_way_measurements,
+            compress_columns=candidate_cols,
+            constraints=mbi_constraints,
+        )
+      if mappings:
+        data = data.compress(mappings)  # pyrefly: ignore[bad-argument-type]
+        initial_measurements = [
+            m.compress(mappings, data.domain)  # pyrefly: ignore[bad-argument-type]
+            for m in initial_measurements
+        ]
+      logging.info('[DPSynth]: Compressed discrete domain:\n%s', data.domain)
 
-      mappings = dm_common.compression_mappings(
-          one_way_measurements,
-          compress_columns=candidate_cols,
-          constraints=mbi_constraints,
-      )
-    else:
-      mappings = {}
-
-    if mappings:
-      discrete = discrete.compress(mappings)  # pyrefly: ignore[bad-argument-type]
-      initial_measurements = [
-          m.compress(mappings, discrete.domain)  # pyrefly: ignore[bad-argument-type]
-          for m in initial_measurements
-      ]
-    logging.info('[DPSynth]: Compressed discrete domain:\n%s', discrete.domain)
-
-    cfg = self.config.discrete_mechanism
-    if hasattr(cfg, 'supporting_cliques'):
-      cliques = cfg.supporting_cliques(discrete.domain)
-      discrete = _checkpoint.get_or_compute(
-          'precomputed_marginals',
-          dm_common.precompute_marginals,
-          discrete,
-          cliques,  # pyrefly: ignore[bad-argument-type]
-          use_jax=self.config.use_jax_for_bincount,
-      )
+      cfg = self.config.discrete_mechanism
+      if hasattr(cfg, 'supporting_cliques'):
+        cliques = cfg.supporting_cliques(data.domain)
+        data = _checkpoint.get_or_compute(
+            'precomputed_marginals',
+            dm_common.precompute_marginals,
+            data,
+            cliques,  # pyrefly: ignore[bad-argument-type]
+            use_jax=self.config.use_jax_for_bincount,
+        )
 
     mechanism_result = self.base_mechanism(
         rng,
-        data=discrete,
+        data=data,
         initial_measurements=initial_measurements,
         constraints=mbi_constraints,
     )
@@ -355,6 +381,7 @@ class TabularMechanism(api.CalibratedMechanism):
           mechanism_result.model,
           rng,
           use_jax=self.config.use_jax_for_generation,
+          rows=num_rows,
       )
     if mappings:
       synthetic_discrete = synthetic_discrete.decompress(mappings)  # pyrefly: ignore[bad-argument-type]
@@ -369,7 +396,7 @@ class TabularMechanism(api.CalibratedMechanism):
           synthetic_data=synthetic_discrete,
       )
 
-    synthetic_data = codec.decode(synthetic_discrete, rng, column_order)
+    synthetic_data = codec.decode(synthetic_discrete, rng)
     logging.info('[DPSynth]: Converted data back to original domain.')
 
     return DataGenerationResult(
