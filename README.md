@@ -136,7 +136,7 @@ These modules are used by both the in-memory and pipeline code paths:
     `dpsynth.TabularConfig` exposes.
 *   **[`local_mode/`](dpsynth/local_mode/)**: Locally-optimized DP primitives
     for quantiles and partition selection (NumPy/SciPy-based).
-*   **[`adapters/pydantic_api.py`](dpsynth/adapters/pydantic_api.py)**: API for synthesizing
+*   **[`adapters/pydantic.py`](dpsynth/adapters/pydantic.py)**: API for synthesizing
     collections of Pydantic models directly.
 
 ### Pipeline Mode Only

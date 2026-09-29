@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pydantic <--> DataFrame conversion utilities for TabularSynthesizer."""
+"""Pydantic model to dpsynth domain adapter.
 
+Provides three core functions (matching `dpsynth.adapters.protobuf`) to bridge
+flat `pydantic.BaseModel` schemas with `dpsynth` mechanisms:
+
+- `infer_domain`: Infers a `dict[str, domain.AttributeType]` from a `BaseModel`
+  class using field type annotations (`int`, `float`, `bool`, `Enum`, `Literal`)
+  and `pydantic.Field(ge=..., le=..., gt=..., lt=...)` bounds metadata. Optional
+  fields (`T | None`) set `clip_to_range=False` for numeric attributes and
+  prepend `"None"` at index 0 for categorical attributes.
+- `to_tuple`: Converts a `BaseModel` instance to a tuple of field values.
+- `from_tuple`: Reconstructs a `BaseModel` instance from a sequence of values.
+"""
+
+from collections.abc import Mapping, Sequence
 import enum
 import inspect
 import math
@@ -21,9 +34,7 @@ import types
 import typing  # for typing.get_origin and typing.get_args
 from typing import Any, Literal, TypeVar
 
-from dpsynth import data_generation_v3
 from dpsynth import domain
-import pandas as pd
 import pydantic
 from pydantic.fields import annotated_types
 from pydantic.fields import FieldInfo  # pylint: disable=g-importing-member
@@ -115,7 +126,7 @@ def _categorical_attribute_from_field_info(
   )
 
 
-def infer_domain_from_model(
+def infer_domain(
     model_cls: type[pydantic.BaseModel],
 ) -> dict[str, domain.CategoricalAttribute | domain.NumericalAttribute]:
   """Infers the domain of a pydantic model."""
@@ -139,61 +150,43 @@ def infer_domain_from_model(
 RecordT = TypeVar("RecordT", bound=pydantic.BaseModel)
 
 
-def models_to_dataframe(
-    records: list[RecordT],
-    domains_dict: dict[str, domain.AttributeType],
-) -> pd.DataFrame:
-  """Converts a list of pydantic models to a TabularSynthesizer-compatible DataFrame.
-
-  Args:
-    records: List of pydantic model instances.
-    domains_dict: Attribute domain spec (e.g. from ``infer_domain_from_model``).
-
-  Returns:
-    A DataFrame ready to pass to ``TabularSynthesizer.__call__``.
-  """
-  df = pd.DataFrame([r.model_dump() for r in records])
-  for col, attr in domains_dict.items():
+def to_tuple(
+    record: RecordT,
+    *,
+    schema: Mapping[str, domain.AttributeType] | None = None,
+) -> tuple[Any, ...]:
+  """Converts a pydantic model instance to a tuple of field values."""
+  schema = schema or infer_domain(type(record))
+  row = record.model_dump(mode="json")
+  result = []
+  for col, attr in schema.items():
+    val = row[col]
     if isinstance(attr, domain.CategoricalAttribute):
-      df[col] = df[col].astype(str)
-    elif isinstance(attr, domain.NumericalAttribute):
+      val = str(val)
+    elif isinstance(attr, domain.NumericalAttribute) and val is None:
       # the NumericalAttribute contract, but currently doesn't.
-      df[col] = df[col].fillna(attr.min_value)
-      df[col] = pd.to_numeric(df[col])
-  return df
+      val = attr.min_value
+    result.append(val)
+  return tuple(result)
 
 
-def dataframe_to_models(
-    df: pd.DataFrame | data_generation_v3.DataGenerationResult,
+def from_tuple(
+    values: Sequence[Any],
     model_cls: type[RecordT],
-    domains_dict: dict[str, domain.AttributeType],
-) -> list[RecordT]:
-  """Converts a synthetic DataFrame back to pydantic model instances.
+    *,
+    schema: Mapping[str, domain.AttributeType] | None = None,
+) -> RecordT:
+  """Converts a sequence of field values back to a pydantic model instance."""
+  schema = schema or infer_domain(model_cls)
 
-  Args:
-    df: DataFrame or ``DataGenerationResult`` produced by
-      ``TabularSynthesizer``.
-    model_cls: The pydantic model class to instantiate.
-    domains_dict: Attribute domain spec (e.g. from ``infer_domain_from_model``).
-
-  Returns:
-    List of pydantic model instances.
-  """
-  if isinstance(df, data_generation_v3.DataGenerationResult):
-    df = df.synthetic_data
-  for col, attr in domains_dict.items():
-    if isinstance(attr, domain.NumericalAttribute) and attr.dtype == "int":
-      df[col] = pd.to_numeric(df[col], errors="coerce").round()
-
-  def _coerce(v):
-    if isinstance(v, str) and v == str(None):
+  def _coerce(attr, v):
+    if v in (None, "None"):
       return None
-    try:
-      return None if pd.isna(v) else v
-    except (ValueError, TypeError):
-      return v
+    if isinstance(attr, domain.NumericalAttribute):
+      if math.isnan(v):
+        return None
+      return round(float(v)) if attr.dtype == "int" else v
+    return v
 
-  return [
-      model_cls(**{k: _coerce(v) for k, v in row.items()})  # pyrefly: ignore[bad-unpacking]
-      for _, row in df.iterrows()
-  ]
+  kwargs = {k: _coerce(a, v) for (k, a), v in zip(schema.items(), values)}
+  return model_cls(**kwargs)  # pyrefly: ignore[bad-unpacking]

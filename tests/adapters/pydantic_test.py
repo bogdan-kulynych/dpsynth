@@ -19,8 +19,9 @@ from typing import Literal
 from absl.testing import absltest
 from dpsynth import data_generation_v3
 from dpsynth import domain
-from dpsynth.adapters import pydantic_api
+from dpsynth.adapters import pydantic as pydantic_api
 import numpy as np
+import pandas as pd
 import pydantic
 
 
@@ -169,8 +170,8 @@ class PydanticTest(absltest.TestCase):
         ),
     )
 
-  def test_infer_domain_from_model(self):
-    domain_spec = pydantic_api.infer_domain_from_model(SupportedModel)
+  def test_infer_domain(self):
+    domain_spec = pydantic_api.infer_domain(SupportedModel)
     expected_domain_spec = {
         "age": domain.NumericalAttribute(
             min_value=0, max_value=100, clip_to_range=True, dtype="int"
@@ -207,19 +208,19 @@ class PydanticTest(absltest.TestCase):
     }
     self.assertEqual(domain_spec, expected_domain_spec)
 
-  def test_infer_domain_from_model_unsupported_type(self):
+  def test_infer_domain_unsupported_type(self):
     class ModelWithStr(pydantic.BaseModel):
       name: str
 
     with self.assertRaisesRegex(
         ValueError, "Unexpected type annotation: <class 'str'>"
     ):
-      pydantic_api.infer_domain_from_model(ModelWithStr)
+      pydantic_api.infer_domain(ModelWithStr)
 
     with self.assertRaisesRegex(
         ValueError, "Unexpected type annotation: <class 'complex'>"
     ):
-      pydantic_api.infer_domain_from_model(ModelWithUnsupportedType)
+      pydantic_api.infer_domain(ModelWithUnsupportedType)
 
   def test_dp_synthetic_data_generation_with_supported_model(self):
     num_records = 1000
@@ -254,15 +255,17 @@ class PydanticTest(absltest.TestCase):
         :num_records
     ]
 
-    domains = pydantic_api.infer_domain_from_model(SupportedModel)
-    df = pydantic_api.models_to_dataframe(real_data, domains)
+    domains = pydantic_api.infer_domain(SupportedModel)
+    rows = [pydantic_api.to_tuple(r, schema=domains) for r in real_data]
+    df = pd.DataFrame(rows, columns=list(domains))
     synth = data_generation_v3.TabularConfig().calibrate(
         domains, epsilon=epsilon, delta=delta
     )
     synthetic_df = synth(np.random.default_rng(), df).synthetic_data
-    synthetic_records = pydantic_api.dataframe_to_models(
-        synthetic_df, SupportedModel, domains
-    )
+    synthetic_records = [
+        pydantic_api.from_tuple(row, SupportedModel, schema=domains)
+        for row in synthetic_df.itertuples(index=False)
+    ]
 
     self.assertIsInstance(synthetic_records, list)
     self.assertIsInstance(synthetic_records[0], SupportedModel)
@@ -292,15 +295,17 @@ class PydanticTest(absltest.TestCase):
         :num_records
     ]
 
-    domains = pydantic_api.infer_domain_from_model(ModelForNumericalDefaults)
-    df = pydantic_api.models_to_dataframe(real_data, domains)
+    domains = pydantic_api.infer_domain(ModelForNumericalDefaults)
+    rows = [pydantic_api.to_tuple(r, schema=domains) for r in real_data]
+    df = pd.DataFrame(rows, columns=list(domains))
     synth = data_generation_v3.TabularConfig().calibrate(
         domains, epsilon=epsilon, delta=delta
     )
     synthetic_df = synth(np.random.default_rng(), df).synthetic_data
-    synthetic_records = pydantic_api.dataframe_to_models(
-        synthetic_df, ModelForNumericalDefaults, domains
-    )
+    synthetic_records = [
+        pydantic_api.from_tuple(row, ModelForNumericalDefaults, schema=domains)
+        for row in synthetic_df.itertuples(index=False)
+    ]
 
     self.assertIsInstance(synthetic_records, list)
     self.assertIsInstance(synthetic_records[0], ModelForNumericalDefaults)
@@ -332,15 +337,17 @@ class PydanticTest(absltest.TestCase):
         :num_records
     ]
 
-    domains = pydantic_api.infer_domain_from_model(ModelForCategorical)
-    df = pydantic_api.models_to_dataframe(real_data, domains)
+    domains = pydantic_api.infer_domain(ModelForCategorical)
+    rows = [pydantic_api.to_tuple(r, schema=domains) for r in real_data]
+    df = pd.DataFrame(rows, columns=list(domains))
     synth = data_generation_v3.TabularConfig().calibrate(
         domains, epsilon=epsilon, delta=delta
     )
     synthetic_df = synth(np.random.default_rng(), df).synthetic_data
-    synthetic_records = pydantic_api.dataframe_to_models(
-        synthetic_df, ModelForCategorical, domains
-    )
+    synthetic_records = [
+        pydantic_api.from_tuple(row, ModelForCategorical, schema=domains)
+        for row in synthetic_df.itertuples(index=False)
+    ]
 
     self.assertIsInstance(synthetic_records, list)
     self.assertIsInstance(synthetic_records[0], ModelForCategorical)
