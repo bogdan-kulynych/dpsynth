@@ -69,6 +69,30 @@ class SupportedModel(pydantic.BaseModel):
   optional_literal: Literal["a", "b"] | None
 
 
+class Tier(enum.Enum):
+  TIER_UNSPECIFIED = "TIER_UNSPECIFIED"
+  TIER_FREE = "TIER_FREE"
+  TIER_PRO = "TIER_PRO"
+
+
+class DeviceSpec(pydantic.BaseModel):
+  os: str
+  ram_gb: int = pydantic.Field(ge=2, le=64)
+
+
+class AccountMetrics(pydantic.BaseModel):
+  balance: float = pydantic.Field(ge=0.0, le=10000.0)
+  primary_device: DeviceSpec
+
+
+class CustomerRecord(pydantic.BaseModel):
+  country: str
+  age: int = pydantic.Field(ge=18, le=100)
+  tier: Tier
+  is_active: bool
+  metrics: AccountMetrics
+
+
 class PydanticTest(absltest.TestCase):
 
   def test_get_base_type(self):
@@ -209,18 +233,105 @@ class PydanticTest(absltest.TestCase):
     self.assertEqual(domain_spec, expected_domain_spec)
 
   def test_infer_domain_unsupported_type(self):
-    class ModelWithStr(pydantic.BaseModel):
-      name: str
-
-    with self.assertRaisesRegex(
-        ValueError, "Unexpected type annotation: <class 'str'>"
-    ):
-      pydantic_api.infer_domain(ModelWithStr)
-
     with self.assertRaisesRegex(
         ValueError, "Unexpected type annotation: <class 'complex'>"
     ):
       pydantic_api.infer_domain(ModelWithUnsupportedType)
+
+  def test_open_set_str_description_and_optional_roundtrip(self):
+    class ModelWithDescriptions(pydantic.BaseModel):
+      timezone: str | None = pydantic.Field(description="IANA timezone")
+      rhr_bpm: int | None = pydantic.Field(
+          ge=30, le=120, description="Resting heart rate"
+      )
+      is_active: bool = pydantic.Field(description="Active flag")
+
+    schema = pydantic_api.infer_domain(ModelWithDescriptions)
+    self.assertEqual(
+        schema,
+        {
+            "timezone": domain.OpenSetCategoricalAttribute(
+                description="IANA timezone"
+            ),
+            "rhr_bpm": domain.NumericalAttribute(
+                min_value=30,
+                max_value=120,
+                clip_to_range=False,
+                dtype="int",
+                description="Resting heart rate",
+            ),
+            "is_active": domain.CategoricalAttribute(
+                possible_values=["False", "True"],
+                out_of_domain_index=0,
+                description="Active flag",
+            ),
+        },
+    )
+
+    rec = ModelWithDescriptions(timezone=None, rhr_bpm=None, is_active=True)
+    row = pydantic_api.to_tuple(rec, schema=schema)
+    self.assertEqual(row, ("None", None, "True"))
+    self.assertEqual(
+        pydantic_api.from_tuple(row, ModelWithDescriptions, schema=schema), rec
+    )
+    self.assertEqual(
+        pydantic_api.from_tuple(
+            ("<OOD>", float("nan"), "True"),
+            ModelWithDescriptions,
+            schema=schema,
+        ),
+        rec,
+    )
+
+  def test_optional_nested_model_rejected(self):
+    class OptionalNestedModel(pydantic.BaseModel):
+      device: DeviceSpec | None
+
+    with self.assertRaisesRegex(
+        ValueError, "Optional nested models are not supported"
+    ):
+      pydantic_api.infer_domain(OptionalNestedModel)
+
+  def test_customer_record_nested_roundtrip(self):
+    schema = pydantic_api.infer_domain(CustomerRecord)
+    self.assertEqual(
+        list(schema.keys()),
+        [
+            "country",
+            "age",
+            "tier",
+            "is_active",
+            "metrics.balance",
+            "metrics.primary_device.os",
+            "metrics.primary_device.ram_gb",
+        ],
+    )
+    self.assertEqual(schema["country"], domain.OpenSetCategoricalAttribute())
+    self.assertEqual(
+        schema["metrics.primary_device.os"],
+        domain.OpenSetCategoricalAttribute(),
+    )
+
+    record = CustomerRecord(
+        country="US",
+        age=34,
+        tier=Tier.TIER_PRO,
+        is_active=True,
+        metrics=AccountMetrics(
+            balance=250.5,
+            primary_device=DeviceSpec(os="Android", ram_gb=12),
+        ),
+    )
+
+    row_tuple = pydantic_api.to_tuple(record, schema=schema)
+    self.assertEqual(
+        row_tuple,
+        ("US", 34, "TIER_PRO", "True", 250.5, "Android", 12),
+    )
+
+    restored = pydantic_api.from_tuple(row_tuple, CustomerRecord, schema=schema)
+    self.assertEqual(restored, record)
+    self.assertEqual(pydantic_api.to_tuple(restored, schema=schema), row_tuple)
 
   def test_dp_synthetic_data_generation_with_supported_model(self):
     num_records = 1000

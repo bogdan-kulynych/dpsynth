@@ -14,21 +14,19 @@
 
 """Pydantic model to dpsynth domain adapter.
 
-Provides three core functions (matching `dpsynth.adapters.protobuf`) to bridge
-flat `pydantic.BaseModel` schemas with `dpsynth` mechanisms:
+Provides three functions (matching `dpsynth.adapters.protobuf`) to bridge
+`pydantic.BaseModel` schemas with `dpsynth` mechanisms:
 
-- `infer_domain`: Infers a `dict[str, domain.AttributeType]` from a `BaseModel`
-  class using field type annotations (`int`, `float`, `bool`, `Enum`, `Literal`)
-  and `pydantic.Field(ge=..., le=..., gt=..., lt=...)` bounds metadata. Optional
-  fields (`T | None`) set `clip_to_range=False` for numeric attributes and
-  prepend `"None"` at index 0 for categorical attributes.
-- `to_tuple`: Converts a `BaseModel` instance to a tuple of field values.
+- `infer_domain`: Infers attribute domains from a `BaseModel` class.
+- `to_tuple`: Converts a `BaseModel` instance to a tuple of leaf field values.
 - `from_tuple`: Reconstructs a `BaseModel` instance from a sequence of values.
+
+Nested `BaseModel` fields are flattened into dot-separated keys (e.g.,
+`"metrics.balance"`).
 """
 
 from collections.abc import Mapping, Sequence
 import enum
-import inspect
 import math
 import types
 import typing  # for typing.get_origin and typing.get_args
@@ -55,11 +53,14 @@ def _get_base_type(annotation: type[Any]) -> tuple[bool, type[Any]]:
     assert len(non_none_args) == 1, "Union must have exactly one non-None type."
     annotation = non_none_args[0]
 
-  if not (
-      annotation in (int, float, str, bool)
-      or (inspect.isclass(annotation) and issubclass(annotation, enum.Enum))
-      or typing.get_origin(annotation) is Literal
-  ):
+  is_class = isinstance(annotation, type)
+  is_enum = is_class and issubclass(annotation, enum.Enum)
+  is_model = is_class and issubclass(annotation, pydantic.BaseModel)
+  is_primitive = annotation in (int, float, str, bool)
+  is_literal = typing.get_origin(annotation) is Literal
+  if is_model and is_optional:
+    raise ValueError(f"Optional nested models are not supported: {annotation}.")
+  if not (is_primitive or is_model or is_enum or is_literal):
     raise ValueError(f"Unexpected type annotation: {annotation}.")
 
   return is_optional, annotation
@@ -101,6 +102,7 @@ def _numerical_attribute_from_field_info(
       max_value=upper_bound,  # pyrefly: ignore[unexpected-keyword]
       clip_to_range=not optional,  # pyrefly: ignore[unexpected-keyword]
       dtype=base_type.__name__,  # pyrefly: ignore[unexpected-keyword]
+      description=field_info.description,  # pyrefly: ignore[unexpected-keyword]
   )
 
 
@@ -109,7 +111,7 @@ def _categorical_attribute_from_field_info(
 ) -> domain.CategoricalAttribute:
   """Infers a CategoricalAttribute from a pydantic FieldInfo."""
   optional, base_type = _get_base_type(field_info.annotation)  # pyrefly: ignore[bad-argument-type]
-  if inspect.isclass(base_type) and issubclass(base_type, enum.Enum):
+  if isinstance(base_type, type) and issubclass(base_type, enum.Enum):
     possible_values = [str(e.value) for e in base_type]
   elif typing.get_origin(base_type) is Literal:
     possible_values = [str(v) for v in typing.get_args(base_type)]
@@ -122,25 +124,34 @@ def _categorical_attribute_from_field_info(
     possible_values = [str(None)] + possible_values
 
   return domain.CategoricalAttribute(
-      possible_values=possible_values, out_of_domain_index=0  # pyrefly: ignore[unexpected-keyword]
+      possible_values=possible_values,  # pyrefly: ignore[unexpected-keyword]
+      out_of_domain_index=0,  # pyrefly: ignore[unexpected-keyword]
+      description=field_info.description,  # pyrefly: ignore[unexpected-keyword]
   )
 
 
 def infer_domain(
     model_cls: type[pydantic.BaseModel],
-) -> dict[str, domain.CategoricalAttribute | domain.NumericalAttribute]:
+) -> dict[str, domain.AttributeType]:
   """Infers the domain of a pydantic model."""
 
-  attributes = {}
+  attributes: dict[str, domain.AttributeType] = {}
   for name, meta in model_cls.model_fields.items():
     _, base_type = _get_base_type(meta.annotation)  # pyrefly: ignore[bad-argument-type]
-    if base_type in (int, float):
+    is_class = isinstance(base_type, type)
+    is_enum = is_class and issubclass(base_type, enum.Enum)
+    is_model = is_class and issubclass(base_type, pydantic.BaseModel)
+    is_literal = typing.get_origin(base_type) is Literal
+    if is_model:
+      sub = infer_domain(base_type)
+      attributes.update({f"{name}.{k}": v for k, v in sub.items()})
+    elif base_type in (int, float):
       attributes[name] = _numerical_attribute_from_field_info(meta)
-    elif base_type is bool:
-      attributes[name] = _categorical_attribute_from_field_info(meta)
-    elif inspect.isclass(base_type) and issubclass(base_type, enum.Enum):
-      attributes[name] = _categorical_attribute_from_field_info(meta)
-    elif typing.get_origin(base_type) is Literal:
+    elif base_type is str:
+      attributes[name] = domain.OpenSetCategoricalAttribute(
+          description=meta.description
+      )
+    elif base_type is bool or is_enum or is_literal:
       attributes[name] = _categorical_attribute_from_field_info(meta)
     else:
       raise ValueError(f"Unexpected type annotation: {base_type}.")
@@ -158,14 +169,18 @@ def to_tuple(
   """Converts a pydantic model instance to a tuple of field values."""
   schema = schema or infer_domain(type(record))
   row = record.model_dump(mode="json")
+  cat_types = (domain.CategoricalAttribute, domain.OpenSetCategoricalAttribute)
   result = []
   for col, attr in schema.items():
-    val = row[col]
-    if isinstance(attr, domain.CategoricalAttribute):
+    val = row
+    for part in col.split("."):
+      val = val[part]
+    if isinstance(attr, cat_types):
       val = str(val)
     elif isinstance(attr, domain.NumericalAttribute) and val is None:
       # the NumericalAttribute contract, but currently doesn't.
-      val = attr.min_value
+      if attr.clip_to_range:
+        val = attr.min_value
     result.append(val)
   return tuple(result)
 
@@ -180,7 +195,7 @@ def from_tuple(
   schema = schema or infer_domain(model_cls)
 
   def _coerce(attr, v):
-    if v in (None, "None"):
+    if v in (None, "None", "<OOD>"):
       return None
     if isinstance(attr, domain.NumericalAttribute):
       if math.isnan(v):
@@ -188,5 +203,11 @@ def from_tuple(
       return round(float(v)) if attr.dtype == "int" else v
     return v
 
-  kwargs = {k: _coerce(a, v) for (k, a), v in zip(schema.items(), values)}
+  kwargs: dict[str, Any] = {}
+  for (col, attr), val in zip(schema.items(), values):
+    *parents, leaf = col.split(".")
+    curr = kwargs
+    for part in parents:
+      curr = curr.setdefault(part, {})
+    curr[leaf] = _coerce(attr, val)
   return model_cls(**kwargs)  # pyrefly: ignore[bad-unpacking]
