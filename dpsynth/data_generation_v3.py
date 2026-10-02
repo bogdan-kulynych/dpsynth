@@ -29,7 +29,6 @@ from dpsynth import discrete_mechanisms
 from dpsynth import domain
 from dpsynth.discrete_mechanisms import common as dm_common
 from dpsynth.local_mode import initialization
-from dpsynth.local_mode import primitives
 from dpsynth.local_mode import vectorized_transformations as vtx
 import mbi
 import numpy as np
@@ -157,8 +156,6 @@ class TabularCodec:
       cm = c.column_measurement
       if cm.noisy_counts is None:
         continue
-      elif isinstance(cm, initialization.NumericalMeasurement):
-        query = mbi.DatavectorQuery(use_for_total_estimation=False)
       elif isinstance(cm, initialization.OpenSetMeasurement):
         query = mbi.SlicedQuery(start=1)
       else:
@@ -208,7 +205,6 @@ class TabularMechanism(api.CalibratedMechanism):
     schema: The dataset schema and constraints.
     base_mechanism: The calibrated discrete mechanism.
     initializers: Per-column calibrated initializers.
-    total_count_sigma: Sigma for the total-count mechanism.
     max_records_per_user: Assumed upper bound on the number of records a single
       user contributes.
   """
@@ -217,16 +213,12 @@ class TabularMechanism(api.CalibratedMechanism):
   schema: domain.Schema
   base_mechanism: discrete_mechanisms.CalibratedMechanism
   initializers: dict[str, api.CalibratedMechanism]
-  total_count_sigma: float = dataclasses.field(repr=False)
   max_records_per_user: int = 1
 
   @property
   def dp_event(self) -> dp_accounting.DpEvent:
     """Returns the composed DpEvent for all sub-mechanisms."""
     events = [init.dp_event for init in self.initializers.values()]
-    events.append(
-        dp_accounting.GaussianDpEvent(noise_multiplier=self.total_count_sigma)
-    )
     events.append(self.base_mechanism.dp_event)
     events = [e for e in events if not isinstance(e, dp_accounting.NoOpDpEvent)]
 
@@ -267,32 +259,13 @@ class TabularMechanism(api.CalibratedMechanism):
         )
 
     # Phase 1: Per-column initialization.
-    # Measure total count first, then run per-column initializers.
     def _run_initializers():
-      noisy_total = primitives.add_gaussian_noise(
-          rng,
-          len(data),
-          self.total_count_sigma,
-          self.max_records_per_user,
-      )
-      total = max(1.0, noisy_total)
-      total_measurement = mbi.LinearMeasurement(
-          noisy_measurement=np.array([total]),
-          clique=(),
-          stddev=self.max_records_per_user * self.total_count_sigma,
-      )
+      return {
+          col: init(rng, data[col].values)
+          for col, init in self.initializers.items()
+      }
 
-      results: dict[str, initialization.ColumnMeasurement] = {}
-      for col, init in self.initializers.items():
-        if isinstance(init, initialization.NumericalInitializer):
-          results[col] = init(
-              rng, data[col].values, estimated_total=float(total)
-          )
-        else:
-          results[col] = init(rng, data[col].values)
-      return total_measurement, results
-
-    total_measurement, results = _checkpoint.get_or_compute(
+    results = _checkpoint.get_or_compute(
         'column_measurements', _run_initializers
     )
 
@@ -306,7 +279,6 @@ class TabularMechanism(api.CalibratedMechanism):
         rng,
         results,
         discrete,
-        total_measurement,
         cross_attribute_constraints=cross_attribute_constraints,
         num_rows=num_rows,
     )
@@ -316,7 +288,6 @@ class TabularMechanism(api.CalibratedMechanism):
       rng: np.random.Generator,
       column_measurements: Mapping[str, initialization.ColumnMeasurement],
       data: mbi.Dataset | mbi.CliqueVector,
-      total_measurement: mbi.LinearMeasurement,
       *,
       cross_attribute_constraints: Sequence[constraints.Constraint] = (),
       num_rows: int | None = None,
@@ -328,11 +299,11 @@ class TabularMechanism(api.CalibratedMechanism):
       )
     mbi_constraints = tuple(c.to_mbi() for c in cross_attribute_constraints)
 
-    # Feed the noisy total (clique ()) and one-way column measurements as
-    # initial measurements so the mechanism does not re-measure them.
+    # Feed one-way column measurements as initial measurements so the mechanism
+    # does not re-measure them.
     codec = TabularCodec.from_measurements(column_measurements, self.schema)
     one_way_measurements = codec.one_way_measurements()
-    initial_measurements = [total_measurement, *one_way_measurements]
+    initial_measurements = list(one_way_measurements)
 
     mappings = {}
     if isinstance(data, mbi.Dataset):
@@ -539,10 +510,8 @@ class TabularConfig(api.MechanismConfig):
         schema, self.numerical_bins, self.numerical_epsilon_ratio
     )
     init_rho = self.init_budget_fraction * zcdp_rho
-    # +1 for the DPGaussianCount that always measures the total.
-    per_col_rho = init_rho / (len(inits) + 1)
+    per_col_rho = init_rho / len(inits)
     discrete_rho = (1 - self.init_budget_fraction) * zcdp_rho
-    total_count_sigma = (0.5 / per_col_rho) ** 0.5
 
     calibrated_inits: dict[str, api.CalibratedMechanism]
 
@@ -566,7 +535,6 @@ class TabularConfig(api.MechanismConfig):
         schema=schema,
         base_mechanism=calibrated_discrete,
         initializers=calibrated_inits,
-        total_count_sigma=total_count_sigma,
         max_records_per_user=max_records_per_user,
     )
 

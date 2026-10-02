@@ -122,17 +122,26 @@ class NumericalInitializerConfig(api.MechanismConfig):
       deeper level of recursive bisection. Defaults to 1.0 (uniform budget split
       across levels). Setting to sqrt(2) approx 1.414 can provide minor accuracy
       gains on smooth continuous data.
+    quantile_budget_fraction: Fraction of the zCDP budget allocated to the
+      quantile tree; the remainder is allocated to the Gaussian mechanism for
+      measuring discretized bin counts. Defaults to 0.5.
   """
 
   num_partitions: int
   max_grid_size: int = 10_000_000
   epsilon_ratio: float = 1.0
+  quantile_budget_fraction: float = 0.5
 
   def __post_init__(self):
     if self.max_grid_size < 2:
       raise ValueError(f'max_grid_size must be >= 2, got {self.max_grid_size}.')
     if self.num_partitions >= self.max_grid_size:
       raise ValueError(f'{self.num_partitions=} >= {self.max_grid_size=}')
+    if not 0.0 < self.quantile_budget_fraction < 1.0:
+      raise ValueError(
+          'quantile_budget_fraction must be in (0, 1), got'
+          f' {self.quantile_budget_fraction}.'
+      )
 
   def configure(
       self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
@@ -144,14 +153,18 @@ class NumericalInitializerConfig(api.MechanismConfig):
     if 2**levels != self.num_partitions:
       raise ValueError(f'{self.num_partitions=} must be a power of 2.')
 
+    quantile_rho = zcdp_rho * self.quantile_budget_fraction
+    count_rho = zcdp_rho * (1.0 - self.quantile_budget_fraction)
     rho_ratio = self.epsilon_ratio**2
     budget_weights = rho_ratio ** np.arange(levels)[::-1]
-    rho_levels = zcdp_rho * budget_weights / budget_weights.sum()
+    rho_levels = quantile_rho * budget_weights / budget_weights.sum()
     eps = np.sqrt(8.0 * rho_levels)
+    sigma = math.sqrt(0.5 / count_rho)
     return NumericalInitializer(
         config=self,
         attribute=attribute,
         epsilon_levels=tuple(eps.tolist()),
+        sigma=sigma,
         max_records_per_user=max_records_per_user,
     )
 
@@ -163,6 +176,7 @@ class NumericalInitializer(api.CalibratedMechanism):
   config: NumericalInitializerConfig
   attribute: domain.NumericalAttribute
   epsilon_levels: tuple[float, ...]
+  sigma: float
   max_records_per_user: int = 1
 
   def __post_init__(self):
@@ -184,27 +198,28 @@ class NumericalInitializer(api.CalibratedMechanism):
     return self.grid_spec[2]
 
   @property
-  def zcdp_rho(self) -> float:
-    return sum(e**2 / 8.0 for e in self.epsilon_levels)
-
-  @property
   def dp_event(self) -> dp_accounting.DpEvent:
-    """Returns the composed privacy event for the quantile computation."""
-    return dp_accounting.ComposedDpEvent([
+    """Returns the composed privacy event for quantiles and bin counts."""
+    events: list[dp_accounting.DpEvent] = [
         dp_accounting.ExponentialMechanismDpEvent(epsilon=float(eps))
         for eps in self.epsilon_levels
-    ])
+    ]
+    events.append(dp_accounting.GaussianDpEvent(noise_multiplier=self.sigma))
+    return dp_accounting.ComposedDpEvent(events)
 
   def __call__(
       self,
       rng: np.random.Generator,
       data: np.ndarray,
-      *,
-      estimated_total: float | None = None,
   ) -> NumericalMeasurement:
-    """Returns a NumericalMeasurement with the discretization transform."""
+    """Returns a NumericalMeasurement with the discretization and noisy counts."""
     counts = self._grid_histogram(data)
-    return self.from_summary(rng, counts, estimated_total=estimated_total)
+    ood_count = (
+        float(len(data) - counts.sum())
+        if not self.attribute.clip_to_range
+        else 0.0
+    )
+    return self.from_summary(rng, counts, ood_count=ood_count)
 
   def _grid_histogram(self, data):
     """Returns the quantile candidate-grid histogram (length grid_size)."""
@@ -218,7 +233,7 @@ class NumericalInitializer(api.CalibratedMechanism):
       rng: np.random.Generator,
       counts: np.ndarray,
       *,
-      estimated_total: float | None = None,
+      ood_count: float = 0.0,
   ) -> NumericalMeasurement:
     """Returns a NumericalMeasurement from pre-aggregated histogram counts."""
     jitter_strategy = 'refine' if self.attribute.dtype == 'int' else 'symmetric'
@@ -233,21 +248,29 @@ class NumericalInitializer(api.CalibratedMechanism):
     delta = (upper - lower) / max(1, np.asarray(counts).size - 1)
     raw_edges = [lower + i * delta for i in indices]
 
-    return edges_to_column_measurement(
+    cm = edges_to_column_measurement(
         raw_edges=raw_edges,
         attribute=self.attribute,
-        zcdp_rho=self.zcdp_rho,
-        estimated_total=estimated_total,
-        max_records_per_user=self.max_records_per_user,
+    )
+    splits = np.round((cm.bin_edges - lower) / delta).astype(np.int64) + 1
+    segments = np.split(np.asarray(counts, dtype=float), splits)
+    in_domain_counts = np.array([seg.sum() for seg in segments], dtype=float)
+    if self.attribute.clip_to_range:
+      bin_counts = in_domain_counts
+    else:
+      bin_counts = np.r_[ood_count, in_domain_counts]
+    noisy = primitives.add_gaussian_noise(
+        rng, bin_counts, self.sigma, self.max_records_per_user
+    )
+    stddev = self.max_records_per_user * self.sigma
+    return dataclasses.replace(
+        cm, noisy_counts=np.asarray(noisy), stddev=stddev
     )
 
 
 def edges_to_column_measurement(
     raw_edges,
     attribute,
-    zcdp_rho,
-    estimated_total=None,
-    max_records_per_user=1,
 ) -> NumericalMeasurement:
   """Converts raw quantile edges into a NumericalMeasurement.
 
@@ -257,37 +280,16 @@ def edges_to_column_measurement(
   Args:
     raw_edges: Quantile edge values (unsorted duplicates are fine).
     attribute: The ``NumericalAttribute`` defining the data domain.
-    zcdp_rho: Total zCDP rho consumed by the quantile mechanism.
-    estimated_total: If provided, a heuristic one-way measurement is included.
-    max_records_per_user: Assumed upper bound on the number of records a single
-      user contributes.
 
   Returns:
-    A ``NumericalMeasurement`` with bin edges and optionally noisy counts.
+    A ``NumericalMeasurement`` with deduplicated bin edges.
   """
   raw_edges = np.asarray(raw_edges, dtype=float)
-  bin_edges, edge_counts = np.unique(raw_edges, return_counts=True)
-  max_val = attribute.max_value
-  if len(bin_edges) > 0 and bin_edges[-1] >= max_val:
-    tail_count = edge_counts[-1]
+  bin_edges = np.unique(raw_edges)
+  if len(bin_edges) > 0 and bin_edges[-1] >= attribute.max_value:
     bin_edges = bin_edges[:-1]
-    edge_counts = edge_counts[:-1]
-    bin_weights = np.append(edge_counts, tail_count + 1)
-  else:
-    bin_weights = np.append(edge_counts, 1)
   cat_attr = vtx.categorical_attribute_from_edges(bin_edges, attribute)
-
-  noisy_counts = None
-  stddev = np.nan
-  if estimated_total is not None:
-    if not attribute.clip_to_range:
-      bin_weights = np.r_[0, bin_weights]
-    noisy_counts = estimated_total * bin_weights / bin_weights.sum()
-    stddev = max_records_per_user / np.sqrt(zcdp_rho)
-
-  return NumericalMeasurement(
-      cat_attr, bin_edges, noisy_counts=noisy_counts, stddev=stddev
-  )
+  return NumericalMeasurement(cat_attr, bin_edges)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

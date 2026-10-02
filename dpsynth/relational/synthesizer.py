@@ -166,7 +166,6 @@ def _run_single_col_initializer(
     rng: np.random.Generator,
     data: np.ndarray,
     weights: np.ndarray,
-    estimated_total: float | None = None,
 ) -> initialization.ColumnMeasurement:
   """Runs a single column initializer on weighted standalone table data.
 
@@ -181,8 +180,6 @@ def _run_single_col_initializer(
     rng: NumPy random generator.
     data: 1D array of column values.
     weights: 1D float array of row sensitivity weights.
-    estimated_total: Optional root table estimated total count for
-      NumericalInitializer heuristic one-way measurements.
 
   Returns:
     A ColumnMeasurement containing the discovered categorical attribute,
@@ -196,8 +193,10 @@ def _run_single_col_initializer(
     values = np.asarray(data, dtype=float)
     if attr.clip_to_range:
       values = np.where(np.isnan(values), attr.min_value, values)
+      ood_count = 0.0
     else:
       in_domain = (values >= attr.min_value) & (values <= attr.max_value)
+      ood_count = float(weights[~in_domain].sum())
       values, weights = values[in_domain], weights[in_domain]
     if attr.dtype == 'int':
       values = np.round(values)
@@ -205,7 +204,7 @@ def _run_single_col_initializer(
     delta = (upper - lower) / (gs - 1)
     indices = initialization.encode_to_grid(values, lower, upper, delta)
     counts = np.bincount(indices, weights=weights, minlength=gs)
-    return init.from_summary(rng, counts, estimated_total=estimated_total)
+    return init.from_summary(rng, counts, ood_count=ood_count)
 
   if isinstance(init, initialization.CategoricalInitializer):
     encoded = vtx.discrete_encode(data, init.attribute)
@@ -230,7 +229,6 @@ def _run_table_initializers(
     rng: np.random.Generator,
     tables: Mapping[str, pd.DataFrame],
     weights: Mapping[str, np.ndarray],
-    estimated_total: float | None = None,
 ) -> dict[str, dict[str, initialization.ColumnMeasurement]]:
   """Runs column initializers across all tables on weighted data.
 
@@ -240,8 +238,6 @@ def _run_table_initializers(
     rng: NumPy random generator.
     tables: Mapping from table name to filtered active DataFrames.
     weights: Mapping from table name to 1D sensitivity weights.
-    estimated_total: Optional root table estimated total count for
-      NumericalInitializer heuristic one-way measurements.
 
   Returns:
     A nested mapping from table and column name to its ColumnMeasurement.
@@ -257,7 +253,6 @@ def _run_table_initializers(
           rng=rng,
           data=table_df[col_name].to_numpy(),
           weights=table_w,
-          estimated_total=estimated_total,
       )
     results[table_name] = table_results
   return results
@@ -397,7 +392,6 @@ def _run_table_preprocessing(
       rng=rng,
       tables=filtered_tables,
       weights=weights,
-      estimated_total=noisy_root_total,
   )
 
   codecs, datasets, mappings, one_ways = _encode_and_compress_tables(

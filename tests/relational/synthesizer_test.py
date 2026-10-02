@@ -747,7 +747,7 @@ class SynthesizerTest(absltest.TestCase):
     data_num = np.array([10.0, 20.0, 30.0, 80.0, 90.0])
     weights_num = np.array([0.5, 0.5, 1.0, 0.5, 0.5])
     res_num = synthesizer._run_single_col_initializer(
-        num_init, rng, data_num, weights_num, estimated_total=100.0
+        num_init, rng, data_num, weights_num
     )
     self.assertIsInstance(res_num, initialization.NumericalMeasurement)
     self.assertIsNotNone(res_num.bin_edges)
@@ -840,7 +840,6 @@ class SynthesizerTest(absltest.TestCase):
         rng=rng,
         tables=tables,
         weights=weights,
-        estimated_total=2.0,
     )
 
     self.assertIn('Household', results)
