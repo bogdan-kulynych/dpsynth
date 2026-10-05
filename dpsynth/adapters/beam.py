@@ -541,7 +541,7 @@ class BeamTabularConfig(api.MechanismConfig):
   Usage::
 
       config = data_generation_v3.TabularConfig(domains=domains)
-      beam_synth = BeamTabularConfig(config).configure(zcdp_rho=1.0)
+      beam_synth = BeamTabularConfig(config).configure(budget=1.0)
       result = beam_synth(rng, create_rows_fn)
 
   Attributes:
@@ -566,12 +566,12 @@ class BeamTabularConfig(api.MechanismConfig):
       )
 
   def configure(
-      self, schema=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, schema=None, *, budget, delta=0, max_records_per_user=1
   ) -> BeamTabularMechanism:
     """Returns a copy whose synthesizer is configured with the given budget."""
     synthesizer = self.synthesizer.configure(
         schema,
-        zcdp_rho=zcdp_rho,
+        budget=budget,
         delta=delta,
         max_records_per_user=max_records_per_user,
     )

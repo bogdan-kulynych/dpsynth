@@ -144,7 +144,7 @@ class NumericalInitializerConfig(api.MechanismConfig):
       )
 
   def configure(
-      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, attribute=None, *, budget, delta=0, max_records_per_user=1
   ):
     assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
@@ -153,8 +153,8 @@ class NumericalInitializerConfig(api.MechanismConfig):
     if 2**levels != self.num_partitions:
       raise ValueError(f'{self.num_partitions=} must be a power of 2.')
 
-    quantile_rho = zcdp_rho * self.quantile_budget_fraction
-    count_rho = zcdp_rho * (1.0 - self.quantile_budget_fraction)
+    quantile_rho = budget * self.quantile_budget_fraction
+    count_rho = budget * (1.0 - self.quantile_budget_fraction)
     rho_ratio = self.epsilon_ratio**2
     budget_weights = rho_ratio ** np.arange(levels)[::-1]
     rho_levels = quantile_rho * budget_weights / budget_weights.sum()
@@ -297,14 +297,14 @@ class CategoricalInitializerConfig(api.MechanismConfig):
   """Configuration for initializing categorical attributes."""
 
   def configure(
-      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, attribute=None, *, budget, delta=0, max_records_per_user=1
   ):
     assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
     return CategoricalInitializer(
         config=self,
         attribute=attribute,
-        sigma=math.sqrt(0.5 / zcdp_rho),
+        sigma=math.sqrt(0.5 / budget),
         max_records_per_user=max_records_per_user,
     )
 
@@ -351,7 +351,7 @@ class OpenSetInitializerConfig(api.MechanismConfig):
   min_count: int = 1
 
   def configure(
-      self, attribute=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, attribute=None, *, budget, delta=0, max_records_per_user=1
   ):
     assert attribute is not None
     api.validate_max_records_per_user(max_records_per_user)
@@ -359,7 +359,7 @@ class OpenSetInitializerConfig(api.MechanismConfig):
         config=self,
         attribute=attribute,
         max_records_per_user=max_records_per_user,
-        sigma=math.sqrt(0.5 / zcdp_rho),
+        sigma=math.sqrt(0.5 / budget),
         delta=delta,
     )
 

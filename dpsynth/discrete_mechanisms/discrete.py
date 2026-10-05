@@ -59,14 +59,14 @@ class DiscreteConfig(api.MechanismConfig):
   use_jax_for_bincount: bool = False
   use_jax_for_generation: bool = False
 
-  def configure(self, _=None, *, zcdp_rho, delta=0, max_records_per_user=1):
+  def configure(self, _=None, *, budget, delta=0, max_records_per_user=1):
     """Configures the synthesizer with a zCDP budget."""
     api.validate_max_records_per_user(max_records_per_user)
 
-    one_way_rho = zcdp_rho * self.one_way_budget_fraction
-    remaining_rho = zcdp_rho * (1 - self.one_way_budget_fraction)
+    one_way_rho = budget * self.one_way_budget_fraction
+    remaining_rho = budget * (1 - self.one_way_budget_fraction)
     inner = self.mechanism.configure(
-        zcdp_rho=remaining_rho,
+        budget=remaining_rho,
         delta=delta,
         max_records_per_user=max_records_per_user,
     )

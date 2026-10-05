@@ -41,7 +41,7 @@ Usage::
       iterations=100,
       batch_size=8,
       num_examples=1000,
-  ).configure(zcdp_rho=0.5)
+  ).configure(budget=0.5)
 
   final_state = trainer(rng=42, data=dataset)
 """
@@ -98,15 +98,15 @@ class DPTrainer(api.DPMechanism):
   performance_flags: execution_plan.PerformanceFlags | None = None
   callback: training.CallbackFn | None = None
 
-  def configure(self, _=None, *, zcdp_rho, delta=0.0, max_records_per_user=1):
+  def configure(self, _=None, *, budget, delta=0.0, max_records_per_user=1):
     """Returns a copy with noise calibrated to the zCDP budget.
 
     Uses a loose upper bound ignoring subsampling amplification:
-    ``sigma = sqrt(T / (2 * rho))``. The ``dp_event`` property returns the
+    ``sigma = sqrt(T / (2 * budget))``. The ``dp_event`` property returns the
     full event with amplification for tight downstream accounting.
 
     Args:
-      zcdp_rho: The zCDP privacy budget (rho).
+      budget: Dummy calibration budget (roughly on a zCDP rho scale).
       delta: Unused. Accepted for interface compatibility.
       max_records_per_user: Maximum number of records per user.
 
@@ -118,7 +118,7 @@ class DPTrainer(api.DPMechanism):
     cfg = typing.cast(execution_plan.BandMFConfig, self.mechanism_config)
     num_bands = len(cfg.strategy)  # pyrefly: ignore[bad-argument-type]
     rounds = math.ceil(cfg.iterations / num_bands)
-    noise_multiplier = math.sqrt(rounds / (2.0 * zcdp_rho))
+    noise_multiplier = math.sqrt(rounds / (2.0 * budget))
     calibrated_config = dataclasses.replace(
         cfg,
         noise_multiplier=noise_multiplier,

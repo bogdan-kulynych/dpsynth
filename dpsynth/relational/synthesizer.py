@@ -1106,14 +1106,14 @@ class MultiTableConfig(api.MechanismConfig):
           | None
       ) = None,
       *,
-      zcdp_rho: float,
+      budget: float,
       delta: float = 0.0,
       max_records_per_user: int = 1,
   ) -> MultiTableMechanism:
     """Configures privacy budgets across column initializers and links.
 
     Formal Guarantees:
-      - Additive zCDP Partitioning: The total zCDP budget zcdp_rho is
+      - Additive zCDP Partitioning: The total zCDP budget is
         additively split into init_rho (allocated to 1 root total-count
         measurement and N_total_columns per-column initializers) and
         total_discrete_rho (split evenly across relational hierarchy links).
@@ -1133,7 +1133,7 @@ class MultiTableConfig(api.MechanismConfig):
     Args:
       schema: Mapping from table name to table domain schema (either a
         `domain.Schema` or a mapping of column name to `AttributeType`).
-      zcdp_rho: The total zCDP privacy budget (rho > 0).
+      budget: The total privacy budget (budget > 0).
       delta: Approximate DP delta for open-set Gaussian partition selection.
       max_records_per_user: Upper bound on root entity contributions (>= 1).
 
@@ -1159,8 +1159,8 @@ class MultiTableConfig(api.MechanismConfig):
           ' foreign_keys. For single-table synthesis, use TabularConfig.'
       )
     api.validate_max_records_per_user(max_records_per_user)
-    if zcdp_rho <= 0:
-      raise ValueError(f'zcdp_rho must be positive, got {zcdp_rho}.')
+    if budget <= 0:
+      raise ValueError(f'budget must be positive, got {budget}.')
 
     # Normalize table schemas into domain.Schema instances.
     domains: dict[str, domain.Schema] = {
@@ -1271,17 +1271,17 @@ class MultiTableConfig(api.MechanismConfig):
     )
 
     total_cols = sum(len(table_schema) for table_schema in domains.values())
-    init_rho = self.init_budget_fraction * zcdp_rho
+    init_rho = self.init_budget_fraction * budget
     per_col_rho = init_rho / (total_cols + 1)  # +1 for root table total count.
     total_count_rho = per_col_rho
-    total_discrete_rho = zcdp_rho - init_rho
+    total_discrete_rho = budget - init_rho
     per_link_rho = total_discrete_rho / len(link_sensitivities)
 
     calibrated_inits = {
         table: {
             col: init.configure(
                 domains[table][col],
-                zcdp_rho=per_col_rho,
+                budget=per_col_rho,
                 delta=per_col_deltas[table][col],
                 max_records_per_user=max_records_per_user,
             )
@@ -1295,7 +1295,7 @@ class MultiTableConfig(api.MechanismConfig):
 
     calibrated_discrete = {
         link_name: self.discrete_mechanism.configure(
-            zcdp_rho=per_link_rho,
+            budget=per_link_rho,
             max_records_per_user=sensitivity,
         )
         for link_name, sensitivity in link_sensitivities.items()

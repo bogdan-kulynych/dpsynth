@@ -384,7 +384,7 @@ class TabularConfig(api.MechanismConfig):
   Usage::
 
       config = TabularConfig(discrete_mechanism=MSTConfig())
-      calibrated = config.configure(schema, zcdp_rho=1.0)
+      calibrated = dpsynth.calibrate(config, schema, epsilon=1.0, delta=1e-5)
       result = calibrated(rng, df)
       synthetic_df = result.synthetic_data
 
@@ -447,15 +447,15 @@ class TabularConfig(api.MechanismConfig):
       self,
       schema: domain.Schema | Mapping[str, domain.AttributeType] | None = None,
       *,
-      zcdp_rho: float,
+      budget: float,
       delta: float = 0.0,
       max_records_per_user: int = 1,
   ) -> TabularMechanism:
     """Returns a calibrated mechanism configured with the given privacy budget.
 
-    Splits the budget additively, just as it does for ``zcdp_rho``:
+    Splits the budget additively, just as it does for ``budget``:
 
-    - ``init_budget_fraction`` of ``zcdp_rho`` goes to per-column initializers
+    - ``init_budget_fraction`` of ``budget`` goes to per-column initializers
       (split evenly, including a total-count mechanism); the remainder goes to
       the discrete mechanism.
     - ``init_budget_fraction`` of ``delta`` is reserved for open-set partition
@@ -469,7 +469,7 @@ class TabularConfig(api.MechanismConfig):
 
     Args:
       schema: Dataset schema or mapping from column names to attribute domain.
-      zcdp_rho: The zCDP privacy budget.
+      budget: The privacy budget.
       delta: Overall approximate DP delta for the mechanism. A fraction
         (``init_budget_fraction``) is allocated to partition selection for
         open-set columns. Must be positive when open-set categorical attributes
@@ -509,16 +509,16 @@ class TabularConfig(api.MechanismConfig):
     inits = create_initializers(
         schema, self.numerical_bins, self.numerical_epsilon_ratio
     )
-    init_rho = self.init_budget_fraction * zcdp_rho
+    init_rho = self.init_budget_fraction * budget
     per_col_rho = init_rho / len(inits)
-    discrete_rho = (1 - self.init_budget_fraction) * zcdp_rho
+    discrete_rho = (1 - self.init_budget_fraction) * budget
 
     calibrated_inits: dict[str, api.CalibratedMechanism]
 
     calibrated_inits = {
         col: init.configure(
             schema[col],
-            zcdp_rho=per_col_rho,
+            budget=per_col_rho,
             delta=per_col_deltas[col],
             max_records_per_user=max_records_per_user,
         )
@@ -527,7 +527,7 @@ class TabularConfig(api.MechanismConfig):
 
     calibrated_discrete = self.discrete_mechanism.configure(
         max_records_per_user=max_records_per_user,
-        zcdp_rho=discrete_rho,
+        budget=discrete_rho,
     )
 
     return TabularMechanism(

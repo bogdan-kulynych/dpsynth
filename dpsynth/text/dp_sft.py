@@ -26,7 +26,7 @@ Example usage::
   fine_tuner = DPFineTuner(
       model_variant=model.GemmaModel.default('gemma3_270m_it'),
       mechanism_config=config,
-  ).configure(zcdp_rho=0.5)
+  ).configure(budget=0.5)
 
   data = [("What is 2+2?", "4"), ("Capital of France?", "Paris")]
   final_state = fine_tuner(rng=42, data=data)
@@ -87,14 +87,14 @@ class DPFineTuner(api.DPMechanism):
   )
   performance_flags: execution_plan.PerformanceFlags | None = None
 
-  def configure(self, _=None, *, zcdp_rho, delta=0.0, max_records_per_user=1):
+  def configure(self, _=None, *, budget, delta=0.0, max_records_per_user=1):
     """Returns a copy with noise_multiplier calibrated to the zCDP budget.
 
-    Sets the noise_multiplier to satisfy ``zcdp_rho`` under a **loose upper
+    Sets the noise_multiplier to satisfy ``budget`` under a **loose upper
     bound** that ignores Poisson subsampling amplification: the unamplified
     composition of ``T`` Gaussian mechanisms with noise_multiplier ``sigma``
     has zCDP cost ``T / (2 * sigma**2)``, so we set
-    ``sigma = sqrt(T / (2 * rho))``.
+    ``sigma = sqrt(T / (2 * budget))``.
 
     This is deliberately conservative. The ``dp_event`` property returns the
     **full** event including subsampling amplification, so downstream callers
@@ -103,7 +103,7 @@ class DPFineTuner(api.DPMechanism):
     raw events -- not from this loose zCDP bound.
 
     Args:
-      zcdp_rho: The zCDP privacy budget (rho).
+      budget: The privacy budget.
       delta: Unused. Accepted for interface compatibility.
       max_records_per_user: Maximum number of records per user.
 
@@ -115,7 +115,7 @@ class DPFineTuner(api.DPMechanism):
 
     num_bands = len(self.mechanism_config.strategy)  # pyrefly: ignore[bad-argument-type]
     rounds = math.ceil(self.mechanism_config.iterations / num_bands)
-    noise_multiplier = math.sqrt(rounds / (2.0 * zcdp_rho))
+    noise_multiplier = math.sqrt(rounds / (2.0 * budget))
     calibrated_config = dataclasses.replace(
         self.mechanism_config,
         noise_multiplier=noise_multiplier,

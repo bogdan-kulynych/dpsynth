@@ -162,7 +162,7 @@ class DPFineTunerTest(absltest.TestCase):
     mechanism = dp_sft.DPFineTuner(
         model_variant=model.GemmaModel.default('gemma3_270m_it'),
         mechanism_config=_default_config(),
-    ).configure(zcdp_rho=0.5)
+    ).configure(budget=0.5)
     self.assertIsNotNone(mechanism.mechanism_config.noise_multiplier)
     self.assertGreater(mechanism.mechanism_config.noise_multiplier, 0.0)
 
@@ -170,7 +170,7 @@ class DPFineTunerTest(absltest.TestCase):
     mechanism = dp_sft.DPFineTuner(
         model_variant=model.GemmaModel.default('gemma3_270m_it'),
         mechanism_config=_default_config(),
-    ).configure(zcdp_rho=0.5)
+    ).configure(budget=0.5)
     # Single band: rounds = iterations, sigma = sqrt(T / (2*rho)).
     expected = math.sqrt(100 / (2.0 * 0.5))
     self.assertAlmostEqual(
@@ -189,7 +189,7 @@ class DPFineTunerTest(absltest.TestCase):
     mechanism = dp_sft.DPFineTuner(
         model_variant=model.GemmaModel.default('gemma3_270m_it'),
         mechanism_config=_default_config(),
-    ).configure(zcdp_rho=0.5)
+    ).configure(budget=0.5)
     event = mechanism.dp_event
     self.assertIsNotNone(event)
 

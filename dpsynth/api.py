@@ -21,11 +21,8 @@ Example usage::
 
   mechanism = dpsynth.discrete_mechanisms.AIMMechanism(pgm_iters=500)
 
-  # Option 1: Calibrate to (epsilon, delta)-DP (tight PLD accounting).
-  calibrated = mechanism.calibrate(epsilon=1.0, delta=1e-5)
-
-  # Option 2: Configure with a zCDP budget directly.
-  calibrated = mechanism.configure(zcdp_rho=0.5)
+  # Calibrate to (epsilon, delta)-DP.
+  calibrated = dpsynth.calibrate(mechanism, epsilon=1.0, delta=1e-5)
 
   # Run the mechanism.
   result = calibrated(rng, data)
@@ -83,27 +80,28 @@ class MechanismConfig(abc.ABC):
 
   1. **Construct**: Create the config with algorithm-specific parameters
      (e.g., ``AIMConfig(pgm_iters=500)``).
-  2. **Calibrate**: Call ``calibrate(epsilon=..., delta=...)`` or
-     ``configure(zcdp_rho=...)`` to bind a privacy budget, returning a
+  2. **Calibrate**: Call ``dpsynth.calibrate(config, ..., epsilon=...,
+     delta=...)`` to bind a privacy budget, returning a
      ``CalibratedMechanism`` with the mechanism's natural privacy parameter set.
   3. **Run**: Call the calibrated mechanism on data via ``__call__``.
 
   **Design: configure vs calibrate.**  The API separates two concerns:
 
-  - ``configure(zcdp_rho, **kwargs)`` is the low-level primitive that each
-    config must implement. It maps a zCDP budget to the mechanism's natural
-    privacy parameter (e.g., Gaussian sigma) and returns a runnable mechanism.
-    This is lightweight — just arithmetic — and produces reasonably tight
-    parameter settings for most mechanisms.
+  - ``configure(domain=None, *, budget, delta=0)`` is the low-level primitive
+    that each config must implement. It maps a dummy scalar ``budget``
+    (roughly interpretable as a zCDP ``rho`` guarantee, though not a formal
+    privacy guarantee) to the mechanism's natural privacy parameter (e.g.,
+    Gaussian sigma) and returns a runnable mechanism. Callers should always go
+    through the top-level ``dpsynth.calibrate`` API instead.
 
   - ``calibrate(epsilon, delta, **kwargs)`` is the high-level entry point
     defined once on the base class. When called with ``(epsilon, delta)``,
-    it performs a binary search over zCDP budgets using
+    it performs a binary search over ``budget`` values using
     ``dp_accounting.calibrate_dp_mechanism``, calling ``configure`` at each
     candidate and inspecting the resulting ``dp_event`` for tight PLD-based
     accounting. This gives each mechanism the maximum possible budget that
     still satisfies the target (epsilon, delta) guarantee. The (epsilon, delta)
-    path is more precise but more expensive than the direct ``zcdp_rho`` path.
+    path is more precise but more expensive than the direct ``budget`` path.
 
   **Why zCDP as the intermediate.**  Calibrating to zCDP rho makes it easy to
   split a privacy budget across a heterogeneous composition of mechanisms:
@@ -130,13 +128,16 @@ class MechanismConfig(abc.ABC):
 
   @abc.abstractmethod
   def configure(
-      self, domain=None, *, zcdp_rho, delta=0, max_records_per_user=1
+      self, domain=None, *, budget, delta=0, max_records_per_user=1
   ) -> CalibratedMechanism:
-    """Returns a calibrated mechanism for the given zCDP budget.
+    """Returns a calibrated mechanism for the given dummy budget.
 
-    Converts the zCDP budget into the mechanism's natural privacy parameter
+    Converts the budget into the mechanism's natural privacy parameter
     (e.g., Gaussian sigma) and returns a runnable ``CalibratedMechanism`` with
-    that parameter set.
+    that parameter set. Note that ``budget`` is a dummy budget that can roughly
+    be interpreted as the zCDP ``rho`` guarantee, but is not a formal privacy
+    guarantee. Callers should always go through the top-level
+    ``dpsynth.calibrate`` API instead.
 
     Most mechanisms are pure zCDP and ignore ``delta``. Mechanisms that
     consume approximate DP budget (e.g., partition selection with Gaussian
@@ -149,7 +150,8 @@ class MechanismConfig(abc.ABC):
         attribute domain specifications for tabular mechanisms, an individual
         ``AttributeType`` for initializers, or a relational domain mapping).
         Mechanisms that do not need a domain ignore this argument.
-      zcdp_rho: The zCDP privacy budget (rho).
+      budget: Dummy privacy budget (roughly interpretable as zCDP rho, but not a
+        formal guarantee).
       delta: Approximate DP delta consumed by the mechanism itself (e.g., for
         thresholding). Defaults to 0 (pure zCDP). Mechanisms that need delta
         should raise if it is 0.

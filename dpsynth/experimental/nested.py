@@ -219,7 +219,7 @@ class NestedTabularConfig(api.MechanismConfig):
   ...     },
   ... )
   >>> synth = nested.NestedTabularConfig()
-  >>> calibrated = synth.configure(schema, zcdp_rho=1.0)
+  >>> calibrated = synth.configure(schema, budget=1.0)
   >>> rng = np.random.default_rng(42)
   >>> rows = {'platform': ['web', 'mobile'] * 20}
   >>> click_df = pd.DataFrame({**rows, 'element': ['button', 'link'] * 20})
@@ -261,11 +261,11 @@ class NestedTabularConfig(api.MechanismConfig):
       self,
       schema: NestedSchema,
       *,
-      zcdp_rho: float,
+      budget: float,
       delta: float = 0.0,
       max_records_per_user: int = 1,
   ) -> NestedTabularMechanism:
-    """Returns a configured NestedTabularMechanism with the given zCDP budget."""
+    """Returns a configured NestedTabularMechanism with the given budget."""
     if not isinstance(schema, NestedSchema):
       raise TypeError(f"Expected NestedSchema, got {type(schema).__name__}")
     if not self._allow_multiple_records_per_user and max_records_per_user != 1:
@@ -277,8 +277,8 @@ class NestedTabularConfig(api.MechanismConfig):
 
     # Additive zCDP split; each type gets full rho_detail
     # (parallel composition over disjoint type partitions).
-    rho_shared = self.shared_budget_fraction * zcdp_rho
-    rho_detail = (1 - self.shared_budget_fraction) * zcdp_rho
+    rho_shared = self.shared_budget_fraction * budget
+    rho_detail = (1 - self.shared_budget_fraction) * budget
     delta_shared = delta * self.shared_budget_fraction
     delta_detail = delta * (1 - self.shared_budget_fraction)
 
@@ -292,7 +292,7 @@ class NestedTabularConfig(api.MechanismConfig):
         init_budget_fraction=self.init_budget_fraction,
     )
     shared_synth = shared_config.configure(
-        zcdp_rho=rho_shared,
+        budget=rho_shared,
         delta=delta_shared,
         max_records_per_user=max_records_per_user,
     )
@@ -307,7 +307,7 @@ class NestedTabularConfig(api.MechanismConfig):
           init_budget_fraction=self.init_budget_fraction,
       )
       detail_synths[type_name] = config.configure(
-          zcdp_rho=rho_detail,
+          budget=rho_detail,
           delta=delta_detail,
           max_records_per_user=max_records_per_user,
       )

@@ -70,7 +70,7 @@ def calibrate(
   def make_event_fn(rho: float) -> dp_accounting.DpEvent:
     base = config.configure(
         domain,
-        zcdp_rho=rho,
+        budget=rho,
         delta=delta,
         max_records_per_user=max_records_per_user,
     ).dp_event
@@ -115,7 +115,7 @@ def calibrate(
   optimal_rho = max(rhos.values())
   return config.configure(
       domain,
-      zcdp_rho=optimal_rho,
+      budget=optimal_rho,
       delta=delta,
       max_records_per_user=max_records_per_user,
   )
