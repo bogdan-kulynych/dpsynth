@@ -218,8 +218,10 @@ def undiscretize(
   else:
     raise ValueError(f'Unsupported interval_handling: {handling}')
 
-  if attribute_domain.dtype == 'int' and attribute_domain.clip_to_range:
-    result = np.ceil(result).astype(int)
+  if attribute_domain.dtype == 'int':
+    result = np.ceil(result)
+    if attribute_domain.clip_to_range or not np.isnan(sentinel):
+      result = result.astype(int)
   return result
 
 
