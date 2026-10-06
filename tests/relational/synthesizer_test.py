@@ -97,14 +97,11 @@ class SynthesizerTest(absltest.TestCase):
             'gender': domain.CategoricalAttribute(possible_values=['M', 'F']),
         },
     }
-    deltas = synthesizer._compute_table_col_deltas(
-        domains, delta=1e-4, init_budget_fraction=0.2
-    )
-    # Total thresholding delta = 0.2 * 1e-4 = 2e-5.
-    # 2 open-set columns -> each gets 1e-5.
-    self.assertAlmostEqual(deltas['Household']['tags'], 1e-5)
+    deltas = synthesizer._compute_table_col_deltas(domains, delta=1e-4)
+    # 2 open-set columns -> each gets 5e-5.
+    self.assertAlmostEqual(deltas['Household']['tags'], 5e-5)
     self.assertEqual(deltas['Household']['income'], 0.0)
-    self.assertAlmostEqual(deltas['Person']['hobbies'], 1e-5)
+    self.assertAlmostEqual(deltas['Person']['hobbies'], 5e-5)
     self.assertEqual(deltas['Person']['gender'], 0.0)
 
   def test_compute_table_col_deltas_no_open_set(self):
@@ -114,9 +111,7 @@ class SynthesizerTest(absltest.TestCase):
             'region': domain.CategoricalAttribute(possible_values=['U', 'R']),
         },
     }
-    deltas = synthesizer._compute_table_col_deltas(
-        domains, delta=0.0, init_budget_fraction=0.1
-    )
+    deltas = synthesizer._compute_table_col_deltas(domains, delta=0.0)
     self.assertEqual(deltas['Household']['income'], 0.0)
     self.assertEqual(deltas['Household']['region'], 0.0)
 
@@ -127,9 +122,7 @@ class SynthesizerTest(absltest.TestCase):
         },
     }
     with self.assertRaisesRegex(ValueError, 'delta must be positive'):
-      synthesizer._compute_table_col_deltas(
-          domains, delta=0.0, init_budget_fraction=0.1
-      )
+      synthesizer._compute_table_col_deltas(domains, delta=0.0)
 
   def test_dp_event_composition(self):
     # Setup calibrated initializers for 2 tables.

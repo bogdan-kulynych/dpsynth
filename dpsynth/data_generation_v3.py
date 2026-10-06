@@ -419,10 +419,9 @@ class TabularConfig(api.MechanismConfig):
   use_jax_for_generation: bool = False
 
   def _compute_per_col_deltas(self, domains, delta):
-    # Split delta across open-set columns, analogous to splitting zcdp_rho.
-    # Under calibrate(), any delta not consumed here is automatically
-    # available for the zCDP-to-(epsilon, delta) conversion, so this
-    # simple additive split is tight.
+    # Split delta equally across open-set columns. Under calibrate(), any
+    # delta not consumed here is automatically available for the
+    # zCDP-to-(epsilon, delta) conversion, so this additive split is tight.
     num_open_set = sum(
         isinstance(attr, domain.OpenSetCategoricalAttribute)
         for attr in domains.values()
@@ -433,12 +432,10 @@ class TabularConfig(api.MechanismConfig):
           ' present. It is used for Gaussian partition selection.'
       )
 
-    thresholding_delta = self.init_budget_fraction * delta
-
     per_col_deltas = {}
     for col in domains:
       if isinstance(domains[col], domain.OpenSetCategoricalAttribute):
-        per_col_deltas[col] = thresholding_delta / num_open_set
+        per_col_deltas[col] = delta / num_open_set
       else:
         per_col_deltas[col] = 0.0
     return per_col_deltas
@@ -453,27 +450,20 @@ class TabularConfig(api.MechanismConfig):
   ) -> TabularMechanism:
     """Returns a calibrated mechanism configured with the given privacy budget.
 
-    Splits the budget additively, just as it does for ``budget``:
+    Splits the budget additively:
 
     - ``init_budget_fraction`` of ``budget`` goes to per-column initializers
       (split evenly, including a total-count mechanism); the remainder goes to
       the discrete mechanism.
-    - ``init_budget_fraction`` of ``delta`` is reserved for open-set partition
-      selection (split evenly across open-set columns); the remaining delta is
-      unused by pure-zCDP sub-mechanisms.
-
-    When ``calibrate(epsilon, delta)`` is called, the base class binary search
-    passes the guarantee delta here. Because the thresholding delta is honestly
-    reported in the composite ``dp_event``, the binary search automatically
-    ensures the overall (epsilon, delta) guarantee is tight.
+    - ``delta`` is split evenly across open-set columns for partition selection
+      (pure-zCDP sub-mechanisms do not consume ``delta``).
 
     Args:
       schema: Dataset schema or mapping from column names to attribute domain.
       budget: The privacy budget.
-      delta: Overall approximate DP delta for the mechanism. A fraction
-        (``init_budget_fraction``) is allocated to partition selection for
-        open-set columns. Must be positive when open-set categorical attributes
-        are present.
+      delta: Approximate DP delta allocated to partition selection for open-set
+        columns (split evenly across open-set columns). Must be positive when
+        open-set categorical attributes are present.
       max_records_per_user: Assumed upper bound on the number of records a
         single user contributes. Values greater than 1 scale the added noise
         (and mechanism sensitivity) to provide user-level rather than

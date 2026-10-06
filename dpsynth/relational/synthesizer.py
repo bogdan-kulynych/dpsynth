@@ -426,7 +426,6 @@ def _create_table_initializers(
 def _compute_table_col_deltas(
     domains: Mapping[str, domain.Schema],
     delta: float,
-    init_budget_fraction: float,
 ) -> dict[str, dict[str, float]]:
   """Splits thresholding delta additively across open-set columns in all tables.
 
@@ -437,7 +436,6 @@ def _compute_table_col_deltas(
   Args:
     domains: Mapping from table names to per-column AttributeType schemas.
     delta: Total DP delta for partition selection thresholding.
-    init_budget_fraction: Fraction of delta allocated to column initialization.
 
   Returns:
     A nested mapping from table name and column name to its allocated delta.
@@ -448,8 +446,7 @@ def _compute_table_col_deltas(
   Formal Guarantees:
     - Only open-set categorical attributes consume delta
     - Categorical and numerical attributes operate under pure zCDP (delta = 0.0)
-    - Sum of per-column deltas across all tables equals init_budget_fraction *
-    delta.
+    - Sum of per-column deltas across all tables equals delta.
     - Invariance: If no open-set columns exist, all per-column deltas are 0.0.
   """
   num_open_set = 0
@@ -462,8 +459,7 @@ def _compute_table_col_deltas(
         'delta must be positive when open-set categorical attributes are'
         ' present. It is used for Gaussian partition selection.'
     )
-  thresholding_delta = init_budget_fraction * delta
-  per_col_delta = thresholding_delta / num_open_set if num_open_set > 0 else 0.0
+  per_col_delta = delta / num_open_set if num_open_set > 0 else 0.0
   return {
       table: {
           col: (
@@ -1259,11 +1255,7 @@ class MultiTableConfig(api.MechanismConfig):
         hierarchy, max_records_per_user=max_records_per_user
     )
 
-    per_col_deltas = _compute_table_col_deltas(
-        domains,
-        delta=delta,
-        init_budget_fraction=self.init_budget_fraction,
-    )
+    per_col_deltas = _compute_table_col_deltas(domains, delta=delta)
     inits = (
         self.initializers
         if self.initializers is not None

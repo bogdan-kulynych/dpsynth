@@ -239,6 +239,29 @@ class DataGenerationV3Test(parameterized.TestCase):
     with self.assertRaises(TypeError):
       dpsynth.calibrate(config, domain=domains, epsilon=1.0, delta=1e-5)  # pyrefly: ignore[unexpected-keyword]
 
+  def test_calibrate_delta_split(self):
+    domains = {
+        'A': domain.OpenSetCategoricalAttribute(),
+        'B': domain.OpenSetCategoricalAttribute(),
+        'C': domain.CategoricalAttribute(possible_values=['x', 'y']),
+    }
+    config = TabularConfig()
+    calibrated = dpsynth.calibrate(config, domains, epsilon=1.0, delta=1e-5)
+    self.assertAlmostEqual(calibrated.initializers['A'].delta, 2.5e-6)
+    self.assertAlmostEqual(calibrated.initializers['B'].delta, 2.5e-6)
+
+    custom = dpsynth.calibrate(
+        config, domains, epsilon=1.0, delta=1e-5, delta_split=0.2
+    )
+    self.assertAlmostEqual(custom.initializers['A'].delta, 1e-6)
+    self.assertAlmostEqual(custom.initializers['B'].delta, 1e-6)
+
+    for bad_split in (0.0, 1.0, -0.1, 1.5):
+      with self.assertRaisesRegex(ValueError, 'delta_split must be in'):
+        dpsynth.calibrate(
+            config, domains, epsilon=1.0, delta=1e-5, delta_split=bad_split
+        )
+
   @parameterized.product(
       sentinel=[np.nan, None],
       clip_to_range=[True, False],

@@ -288,6 +288,13 @@ class OpenSetCategoricalInitializerTest(absltest.TestCase):
     )
     self.assertEqual(event.events[1].delta, 1e-5)
 
+  def test_calibrate(self):
+    attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
+    config = initialization.OpenSetInitializerConfig()
+    calibrated = config.calibrate(attr, epsilon=1.0, delta=1e-5)
+    self.assertAlmostEqual(calibrated.delta, 5e-6)
+    self.assertGreater(calibrated.sigma, 0.0)
+
   def test_call_noiseless(self):
     attr = domain.OpenSetCategoricalAttribute(default_value='<OOD>')
     rng = np.random.default_rng(42)

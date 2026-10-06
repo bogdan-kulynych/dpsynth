@@ -173,6 +173,7 @@ class MechanismConfig(abc.ABC):
       *,
       epsilon: float,
       delta: float,
+      delta_split: float = 0.5,
       poisson_sampling_prob: float = 1.0,
       max_records_per_user: int = 1,
       accountant_fn: (
@@ -191,6 +192,7 @@ class MechanismConfig(abc.ABC):
         domain,
         epsilon=epsilon,
         delta=delta,
+        delta_split=delta_split,
         poisson_sampling_prob=poisson_sampling_prob,
         max_records_per_user=max_records_per_user,
         accountant_fn=accountant_fn,
