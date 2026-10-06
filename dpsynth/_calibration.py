@@ -23,6 +23,48 @@ from typing import Any
 import dp_accounting
 
 
+def with_group_size(
+    event: dp_accounting.DpEvent, group_size: int
+) -> dp_accounting.DpEvent:
+  """Lifts a DpEvent from record-level (group_size=1) to the given group_size.
+
+  Args:
+    event: The record-level ``DpEvent`` to transform.
+    group_size: Positive integer bound on the number of records per group/user.
+
+  Returns:
+    A ``DpEvent`` characterizing the privacy guarantee for groups of size
+    ``group_size``.
+
+  Raises:
+    ValueError: If ``group_size < 1``.
+    UnsupportedEventError: If ``group_size > 1`` and ``event`` (or a nested
+      sub-event) does not support group-size scaling.
+  """
+  if group_size < 1:
+    raise ValueError(f'group_size must be >= 1, got {group_size}.')
+  identity_types = (dp_accounting.NoOpDpEvent, dp_accounting.NonPrivateDpEvent)
+  if group_size == 1 or isinstance(event, identity_types):
+    return event
+  if isinstance(event, dp_accounting.GaussianDpEvent):
+    return dp_accounting.GaussianDpEvent(event.noise_multiplier / group_size)
+  if isinstance(event, dp_accounting.LaplaceDpEvent):
+    return dp_accounting.LaplaceDpEvent(event.noise_multiplier / group_size)
+  if isinstance(event, dp_accounting.ExponentialMechanismDpEvent):
+    return dp_accounting.ExponentialMechanismDpEvent(event.epsilon * group_size)
+  # See Proposition 5.3 of https://arxiv.org/pdf/1605.02065 for xi != 0.
+  if isinstance(event, dp_accounting.ZCDpEvent) and event.xi == 0:
+    return dp_accounting.ZCDpEvent(event.rho * group_size**2)
+  if isinstance(event, dp_accounting.ComposedDpEvent):
+    scaled = [with_group_size(e, group_size) for e in event.events]
+    return dp_accounting.ComposedDpEvent(scaled)
+  if isinstance(event, dp_accounting.SelfComposedDpEvent):
+    inner = with_group_size(event.event, group_size)
+    return dp_accounting.SelfComposedDpEvent(inner, event.count)
+  # (EpsilonDeltaDpEvent) for group_size > 1.
+  raise dp_accounting.UnsupportedEventError(f'Unsupported event: {event}.')
+
+
 def calibrate(
     config: Any,
     domain: Any = None,
