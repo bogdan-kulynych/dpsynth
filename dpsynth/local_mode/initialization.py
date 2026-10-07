@@ -159,6 +159,10 @@ class NumericalInitializerConfig(api.MechanismConfig):
     budget_weights = rho_ratio ** np.arange(levels)[::-1]
     rho_levels = quantile_rho * budget_weights / budget_weights.sum()
     eps = np.sqrt(8.0 * rho_levels)
+    if attribute.bin_edges is not None:
+      # Skip DP quantiles and allocate the full budget to bin counts.
+      eps = np.array([])
+      count_rho = budget
     sigma = math.sqrt(0.5 / count_rho)
     return NumericalInitializer(
         config=self,
@@ -236,17 +240,23 @@ class NumericalInitializer(api.CalibratedMechanism):
       ood_count: float = 0.0,
   ) -> NumericalMeasurement:
     """Returns a NumericalMeasurement from pre-aggregated histogram counts."""
-    jitter_strategy = 'refine' if self.attribute.dtype == 'int' else 'symmetric'
-    indices = primitives.quantiles_from_histogram(
-        rng,
-        counts,
-        epsilon_levels=np.asarray(self.epsilon_levels),
-        jitter_strategy=jitter_strategy,
-        max_records_per_user=self.max_records_per_user,
-    )
     lower, upper, _ = self.grid_spec
     delta = (upper - lower) / max(1, np.asarray(counts).size - 1)
-    raw_edges = [lower + i * delta for i in indices]
+    if self.attribute.bin_edges is not None:
+      # Skip DP quantiles and aggregate the grid histogram at bin_edges.
+      raw_edges = self.attribute.bin_edges
+    else:
+      jitter_strategy = (
+          'refine' if self.attribute.dtype == 'int' else 'symmetric'
+      )
+      indices = primitives.quantiles_from_histogram(
+          rng,
+          counts,
+          epsilon_levels=np.asarray(self.epsilon_levels),
+          jitter_strategy=jitter_strategy,
+          max_records_per_user=self.max_records_per_user,
+      )
+      raw_edges = [lower + i * delta for i in indices]
 
     cm = edges_to_column_measurement(
         raw_edges=raw_edges,

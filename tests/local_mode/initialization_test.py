@@ -237,6 +237,37 @@ class InitializationTest(absltest.TestCase):
         f' edges={result.bin_edges}',
     )
 
+  def test_numerical_initializer_fixed_bin_edges_dp_event(self):
+    attr = domain.NumericalAttribute(
+        min_value=0, max_value=10, bin_edges=[2.0, 5.0, 8.0]
+    )
+    initializer = initialization.NumericalInitializerConfig(num_partitions=4)
+    configured = initializer.configure(attr, budget=0.5)
+    expected = initialization.NumericalInitializer(
+        config=initializer,
+        attribute=attr,
+        epsilon_levels=(),
+        sigma=1.0,
+    )
+    self.assertEqual(configured, expected)
+    self.assertEqual(
+        configured.dp_event,
+        dp_accounting.ComposedDpEvent([dp_accounting.GaussianDpEvent(1.0)]),
+    )
+
+  def test_numerical_initializer_fixed_bin_edges_call(self):
+    attr = domain.NumericalAttribute(
+        min_value=0, max_value=10, bin_edges=[3.0, 7.0]
+    )
+    rng = np.random.default_rng(0)
+    initializer = initialization.NumericalInitializerConfig(num_partitions=8)
+    data = np.array([0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 8.0, 9.0, 10.0])
+    measurement = initializer.configure(attr, budget=np.inf)(rng, data)
+
+    np.testing.assert_array_equal(measurement.bin_edges, [3.0, 7.0])
+    self.assertEqual(measurement.categorical_attribute.size, 3)
+    np.testing.assert_array_equal(measurement.noisy_counts, [4.0, 2.0, 3.0])
+
 
 class CategoricalInitializerTest(absltest.TestCase):
 
