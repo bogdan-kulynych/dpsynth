@@ -565,15 +565,12 @@ class BeamTabularConfig(api.MechanismConfig):
           ' method.'
       )
 
-  def configure(
-      self, schema=None, *, budget, delta=0, max_records_per_user=1
-  ) -> BeamTabularMechanism:
+  def configure(self, schema=None, *, budget, delta=0) -> BeamTabularMechanism:
     """Returns a copy whose synthesizer is configured with the given budget."""
     synthesizer = self.synthesizer.configure(
         schema,
         budget=budget,
         delta=delta,
-        max_records_per_user=max_records_per_user,
     )
     return BeamTabularMechanism(
         synthesizer=synthesizer,

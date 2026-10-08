@@ -74,7 +74,6 @@ def calibrate(
     delta: float,
     delta_split: float = 0.5,
     poisson_sampling_prob: float = 1.0,
-    max_records_per_user: int = 1,
     accountant_fn: Callable[[], dp_accounting.PrivacyAccountant] | None = None,
 ) -> Any:
   """Calibrates a mechanism config to a target (epsilon, delta)-DP guarantee.
@@ -95,11 +94,6 @@ def calibrate(
     poisson_sampling_prob: If specified, calibrate the mechanism assuming the
       input data is subsampled with the given probability. The actual sampling
       is **NOT** handled internally by the calibrated mechanism.
-    max_records_per_user: Assumed upper bound on the number of records a single
-      user contributes. Added noise (and mechanism sensitivity) is scaled by
-      this factor to provide user-level rather than record-level DP; the privacy
-      accounting is unchanged. Soundness relies on the caller enforcing this
-      bound.
     accountant_fn: Optional zero-argument callable returning a fresh
       ``PrivacyAccountant``. If specified, calibrate using this accountant.
 
@@ -120,7 +114,6 @@ def calibrate(
         domain,
         budget=rho,
         delta=delta * delta_split,
-        max_records_per_user=max_records_per_user,
     ).dp_event
     sampled = dp_accounting.PoissonSampledDpEvent(poisson_sampling_prob, base)
     return base if poisson_sampling_prob == 1.0 else sampled
@@ -165,5 +158,4 @@ def calibrate(
       domain,
       budget=optimal_rho,
       delta=delta * delta_split,
-      max_records_per_user=max_records_per_user,
   )

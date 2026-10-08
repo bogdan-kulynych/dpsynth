@@ -123,36 +123,5 @@ class CalibrationTest(parameterized.TestCase):
     self.assertIsInstance(result, common.DiscreteMechanismResult)
 
 
-class MaxRecordsPerUserTest(parameterized.TestCase):
-  """Tests the user-level DP knob ``max_records_per_user``."""
-
-  @parameterized.named_parameters(*_MECHANISMS.items())
-  def test_dp_event_invariant_to_max_records_per_user(self, mechanism):
-    base = mechanism.configure(budget=_ZCDP_RHO)
-    scaled = mechanism.configure(budget=_ZCDP_RHO, max_records_per_user=4)
-    self.assertEqual(repr(scaled.dp_event), repr(base.dp_event))
-
-  @parameterized.named_parameters(
-      ('MST', _MECHANISMS['MST']),
-      ('Direct', _MECHANISMS['Direct']),
-  )
-  def test_measurement_stddev_scales_with_k(self, mechanism):
-    k = 4
-    data = _make_skewed_dataset(np.random.default_rng(0))
-    base = mechanism.configure(budget=_ZCDP_RHO)(np.random.default_rng(1), data)
-    scaled = mechanism.configure(budget=_ZCDP_RHO, max_records_per_user=k)(
-        np.random.default_rng(1), data
-    )
-    self.assertNotEmpty(base.measurements)
-    self.assertLen(scaled.measurements, len(base.measurements))
-    for base_m, scaled_m in zip(base.measurements, scaled.measurements):
-      self.assertAlmostEqual(scaled_m.stddev, k * base_m.stddev)
-
-  @parameterized.named_parameters(('zero', 0), ('negative', -3))
-  def test_invalid_k_raises(self, k):
-    with self.assertRaises(ValueError):
-      mst.MSTConfig().configure(budget=_ZCDP_RHO, max_records_per_user=k)
-
-
 if __name__ == '__main__':
   absltest.main()

@@ -1097,7 +1097,6 @@ class MultiTableConfig(api.MechanismConfig):
       *,
       budget: float,
       delta: float = 0.0,
-      max_records_per_user: int = 1,
   ) -> MultiTableMechanism:
     """Configures privacy budgets across column initializers and links.
 
@@ -1124,8 +1123,6 @@ class MultiTableConfig(api.MechanismConfig):
         `domain.Schema` or a mapping of column name to `AttributeType`).
       budget: The total privacy budget (budget > 0).
       delta: Approximate DP delta for open-set Gaussian partition selection.
-      max_records_per_user: Upper bound on root entity contributions (must be
-        1).
 
     Returns:
       A calibrated, runnable MultiTableMechanism.
@@ -1133,10 +1130,7 @@ class MultiTableConfig(api.MechanismConfig):
     Raises:
       ValueError: If configuration hyperparameters, schemas, or budgets are
         invalid.
-      NotImplementedError: If max_records_per_user != 1.
     """
-    if max_records_per_user != 1:
-      raise NotImplementedError('max_records_per_user != 1 is not supported.')
     if schema is None:
       raise ValueError(
           'schema must be provided to MultiTableConfig.configure().'

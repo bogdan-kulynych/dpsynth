@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from absl.testing import absltest
-from absl.testing import parameterized
 import dp_accounting
 from dpsynth import domain
 from dpsynth.local_mode import initialization
@@ -423,51 +422,6 @@ class NumericalInitializerFromSummaryTest(absltest.TestCase):
     self.assertLen(
         cm_summary.noisy_counts, cm_summary.categorical_attribute.size
     )
-
-
-class MaxRecordsPerUserTest(parameterized.TestCase):
-  """Tests the user-level DP knob ``max_records_per_user`` on initializers."""
-
-  def test_categorical_stddev_scales_with_k(self):
-    attr = domain.CategoricalAttribute(possible_values=['a', 'b', 'c'])
-    data = np.array(['a', 'b', 'c', 'a'])
-    base = initialization.CategoricalInitializerConfig().configure(
-        attr, budget=1.0
-    )
-    scaled = initialization.CategoricalInitializerConfig().configure(
-        attr, budget=1.0, max_records_per_user=4
-    )
-    b = base(np.random.default_rng(0), data)
-    s = scaled(np.random.default_rng(0), data)
-    self.assertAlmostEqual(s.stddev, 4 * b.stddev)
-
-  def test_numerical_raises_with_multiple_records_per_user(self):
-    attr = domain.NumericalAttribute(min_value=0, max_value=10)
-    with self.assertRaises(NotImplementedError):
-      _ = initialization.NumericalInitializerConfig(num_partitions=4).configure(
-          attr, budget=1.0, max_records_per_user=4
-      )
-
-  def test_open_set_stddev_scales_with_k(self):
-    attr = domain.OpenSetCategoricalAttribute()
-    data = np.array(['a'] * 50 + ['b'] * 40 + ['c'] * 30)
-    base = initialization.OpenSetInitializerConfig().configure(
-        attr, budget=1.0, delta=1e-5
-    )
-    scaled = initialization.OpenSetInitializerConfig().configure(
-        attr, budget=1.0, delta=1e-5, max_records_per_user=4
-    )
-    b = base(np.random.default_rng(0), data)
-    s = scaled(np.random.default_rng(0), data)
-    self.assertAlmostEqual(s.stddev, 4 * b.stddev)
-
-  @parameterized.named_parameters(('zero', 0), ('negative', -3))
-  def test_invalid_k_raises(self, k):
-    attr = domain.CategoricalAttribute(possible_values=['a', 'b'])
-    with self.assertRaises(ValueError):
-      initialization.CategoricalInitializerConfig().configure(
-          attr, budget=0.5, max_records_per_user=k
-      )
 
   def test_open_set_public_possible_values_retained(self):
     attr = domain.OpenSetCategoricalAttribute(
