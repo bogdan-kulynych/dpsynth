@@ -49,14 +49,27 @@ class CalibratedMechanism(abc.ABC):
 
   Subclasses must implement:
 
-  - ``dp_event``: return the exact ``DpEvent`` characterizing the mechanism.
+  - ``dp_event``: return the exact record-level ``DpEvent`` characterizing the
+    mechanism.
   - ``__call__``: run the mechanism on data.
   """
 
   @property
   @abc.abstractmethod
   def dp_event(self) -> dp_accounting.DpEvent:
-    """The DpEvent characterizing the privacy cost of this mechanism."""
+    """The record-level DpEvent characterizing the privacy cost of this mechanism.
+
+    This property always reports the base record-level (``group_size=1``),
+    un-subsampled (``poisson_sampling_prob=1.0``) privacy guarantee of the
+    mechanism itself, even if the mechanism was produced via
+    ``dpsynth.calibrate(..., group_size=k, poisson_sampling_prob=q)``.
+
+    To compute group-level or subsampled privacy guarantees from this event
+    (e.g. when composing mechanisms manually in an external accountant), apply
+    ``dpsynth.with_group_size(mech.dp_event, group_size)`` and/or wrap the
+    result in ``dp_accounting.PoissonSampledDpEvent(poisson_sampling_prob,
+    ...)``.
+    """
 
   @abc.abstractmethod
   def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -167,6 +180,7 @@ class MechanismConfig(abc.ABC):
       delta: float,
       delta_split: float = 0.5,
       poisson_sampling_prob: float = 1.0,
+      group_size: int = 1,
       accountant_fn: (
           Callable[[], dp_accounting.PrivacyAccountant] | None
       ) = None,
@@ -185,6 +199,7 @@ class MechanismConfig(abc.ABC):
         delta=delta,
         delta_split=delta_split,
         poisson_sampling_prob=poisson_sampling_prob,
+        group_size=group_size,
         accountant_fn=accountant_fn,
     )
 

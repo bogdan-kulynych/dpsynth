@@ -74,6 +74,7 @@ def calibrate(
     delta: float,
     delta_split: float = 0.5,
     poisson_sampling_prob: float = 1.0,
+    group_size: int = 1,
     accountant_fn: Callable[[], dp_accounting.PrivacyAccountant] | None = None,
 ) -> Any:
   """Calibrates a mechanism config to a target (epsilon, delta)-DP guarantee.
@@ -93,7 +94,17 @@ def calibrate(
       partition selection). Defaults to 0.5.
     poisson_sampling_prob: If specified, calibrate the mechanism assuming the
       input data is subsampled with the given probability. The actual sampling
-      is **NOT** handled internally by the calibrated mechanism.
+      is **NOT** handled internally by the calibrated mechanism. When combined
+      with ``group_size > 1``, group-size scaling is applied before wrapping in
+      ``PoissonSampledDpEvent``, which assumes group-level (not record-level)
+      Poisson subsampling.
+    group_size: Assumed upper bound on the number of records a single group or
+      individual contributes. Lifts the candidate mechanism's ``dp_event`` via
+      ``with_group_size`` before applying ``poisson_sampling_prob``. Mechanisms
+      that already contain internal ``PoissonSampledDpEvent``s (such as DP-SGD
+      training) cannot be scaled with ``group_size > 1`` and will raise
+      ``UnsupportedEventError``. Soundness relies on the caller enforcing this
+      bound.
     accountant_fn: Optional zero-argument callable returning a fresh
       ``PrivacyAccountant``. If specified, calibrate using this accountant.
 
@@ -101,13 +112,16 @@ def calibrate(
     A calibrated, runnable mechanism.
 
   Raises:
-    ValueError: If epsilon is not positive or delta_split is not in (0, 1).
+    ValueError: If epsilon is not positive, delta_split is not in (0, 1), or
+      group_size < 1.
     UnsupportedEventError: If no accountant supports the mechanism.
   """
   if epsilon <= 0:
     raise ValueError(f'Target epsilon must be positive, got {epsilon}.')
   if not 0 < delta_split < 1:
     raise ValueError(f'delta_split must be in (0, 1), got {delta_split}.')
+  if group_size < 1:
+    raise ValueError(f'group_size < 1: {group_size}.')
 
   def make_event_fn(rho: float) -> dp_accounting.DpEvent:
     base = config.configure(
@@ -115,6 +129,7 @@ def calibrate(
         budget=rho,
         delta=delta * delta_split,
     ).dp_event
+    base = with_group_size(base, group_size)
     sampled = dp_accounting.PoissonSampledDpEvent(poisson_sampling_prob, base)
     return base if poisson_sampling_prob == 1.0 else sampled
 

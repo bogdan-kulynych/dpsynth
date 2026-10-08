@@ -550,5 +550,72 @@ class DataGenerationV3Test(parameterized.TestCase):
     self.assertTrue(any('test | message' in output for output in logs.output))
 
 
+class GroupSizeTest(parameterized.TestCase):
+  """Tests the ``group_size`` parameter of ``dpsynth.calibrate`` end to end."""
+
+  def _categorical_domains(self):
+    return {
+        'A': domain.CategoricalAttribute(['a', 'b', 'c']),
+        'B': domain.CategoricalAttribute(['x', 'y', 'z']),
+    }
+
+  def test_calibrate_scales_noise_with_group_size(self):
+    k = 5
+    config = TabularConfig()
+    domains = self._categorical_domains()
+    cal_base = dpsynth.calibrate(
+        config, domains, epsilon=1.0, delta=1e-5, group_size=1
+    )
+    cal_scaled = dpsynth.calibrate(
+        config, domains, epsilon=1.0, delta=1e-5, group_size=k
+    )
+    self.assertAlmostEqual(
+        cal_scaled.initializers['A'].sigma,
+        k * cal_base.initializers['A'].sigma,
+        places=4,
+    )
+    lifted = dpsynth.with_group_size(cal_scaled.initializers['A'].dp_event, k)
+    self.assertAlmostEqual(
+        lifted.noise_multiplier,
+        cal_base.initializers['A'].dp_event.noise_multiplier,
+        places=4,
+    )
+
+  def test_end_to_end_with_group_size(self):
+    df = pd.DataFrame({'A': ['a', 'b', 'c'], 'B': [1.0, 5.0, 10.0]})
+    domains = {
+        'A': domain.CategoricalAttribute(['a', 'b', 'c']),
+        'B': domain.NumericalAttribute(0.0, 10.0),
+    }
+    config = TabularConfig()
+    calibrated = dpsynth.calibrate(
+        config,
+        domains,
+        epsilon=10.0,
+        delta=1e-5,
+        group_size=3,
+    )
+    synthetic_df = calibrated(np.random.default_rng(0), df).synthetic_data
+    self.assertListEqual(synthetic_df.columns.tolist(), ['A', 'B'])
+
+  def test_open_set_with_group_size_greater_than_one_raises(self):
+    domains = {'A': domain.OpenSetCategoricalAttribute()}
+    config = TabularConfig()
+    with self.assertRaises(dp_accounting.UnsupportedEventError):
+      dpsynth.calibrate(config, domains, epsilon=1.0, delta=1e-5, group_size=3)
+
+  @parameterized.named_parameters(('zero', 0), ('negative', -3))
+  def test_invalid_group_size_raises(self, k):
+    config = TabularConfig()
+    with self.assertRaises(ValueError):
+      _ = dpsynth.calibrate(
+          config,
+          self._categorical_domains(),
+          epsilon=1.0,
+          delta=1e-5,
+          group_size=k,
+      )
+
+
 if __name__ == '__main__':
   absltest.main()
