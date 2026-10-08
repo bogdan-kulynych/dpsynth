@@ -63,7 +63,7 @@ def _worst_approximated(
     candidates: Mapping[mbi.Clique, float],
     data: mbi.Dataset | mbi.CliqueVector,
     estimates: mbi.CliqueVector,
-    eps: float,
+    nu: float,
     sigma: float,
     domain: mbi.Domain,
 ) -> mbi.Clique:
@@ -80,7 +80,7 @@ def _worst_approximated(
   )  # if all weights are 0, could be a problem
   keys, values = list(errors.keys()), np.array(list(errors.values()))
   idx = common.exponential_mechanism(
-      values, eps, max_sensitivity, rng, monotonic=False
+      values, nu, max_sensitivity, rng, monotonic=False
   )
   return keys[idx]
 
@@ -90,18 +90,18 @@ def _round_parameters(
     budget_type: str,
     select_budget_fraction: float,
 ) -> tuple[float, float]:
-  """Returns (epsilon, sigma) for a round given its budget allocation."""
+  """Returns (nu, sigma) for a round given its budget allocation."""
   select_budget = select_budget_fraction * round_budget
   measure_budget = (1.0 - select_budget_fraction) * round_budget
   if budget_type == 'gdp':
-    epsilon = accounting.gdp_exponential_eps(select_budget)
+    nu = accounting.gdp_exponential_nu(select_budget)
     sigma = accounting.gdp_gaussian_sigma(measure_budget)
   elif budget_type == 'zcdp':
-    epsilon = accounting.zcdp_exponential_eps(select_budget)
+    nu = accounting.zcdp_exponential_nu(select_budget)
     sigma = accounting.zcdp_gaussian_sigma(measure_budget)
   else:
     raise ValueError(f'Unsupported budget_type: {budget_type}')
-  return epsilon, sigma
+  return nu, sigma
 
 
 @dataclasses.dataclass(frozen=True)
@@ -229,7 +229,7 @@ class AIM(api.CalibratedMechanism):
       ########################################################################
       with common.timed(phase_times, 'selection'):
         budget_remaining -= budget_per_round
-        epsilon, sigma = _round_parameters(
+        nu, sigma = _round_parameters(
             budget_per_round,
             self.budget_type,
             self.config.select_budget_fraction,
@@ -249,7 +249,7 @@ class AIM(api.CalibratedMechanism):
             small_candidates,
             data,
             estimates,
-            epsilon,
+            nu,
             sigma,
             data.domain,
         )
@@ -299,9 +299,9 @@ class AIM(api.CalibratedMechanism):
 
       new_estimate = model.project(marginal_query).datavector()
 
-      ##########################################
-      # Anneal epsilon and sigma if necessary. #
-      ##########################################
+      #####################################
+      # Anneal nu and sigma if necessary. #
+      #####################################
       threshold = sigma * np.sqrt(2 / np.pi) * data.domain.size(marginal_query)
       if np.linalg.norm(new_estimate - old_estimate, ord=1) <= threshold:
         # No useful information at this noise level, increase budget per round.

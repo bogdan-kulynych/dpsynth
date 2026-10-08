@@ -94,9 +94,9 @@ def zcdp_gaussian_sigma(rho: float) -> float:
   return math.sqrt(0.5 / rho)
 
 
-def zcdp_exponential_eps(rho: float) -> float:
-  """Maximum epsilon such that the exponential mechanism satisfies rho-zCDP."""
-  # rho = 1/8 * epsilon^2
+def zcdp_exponential_nu(rho: float) -> float:
+  """Maximum nu such that the exponential mechanism satisfies rho-zCDP."""
+  # rho = 1/8 * nu^2
   return math.sqrt(8 * rho)
 
 
@@ -104,10 +104,10 @@ def zcdp_bounded_range_optimal_rho(nu: float) -> float:
   """Return the tight zCDP parameter rho of a bounded range mechanism.
 
   A mechanism with bounded range parameter nu (e.g. the exponential mechanism
-  with epsilon = nu) satisfies rho-zCDP for
+  with parameter nu) satisfies rho-zCDP for
   rho = nu / (exp(nu) - 1) + log((exp(nu) - 1) / nu) - 1.
   This improves on the generic bound rho = nu^2 / 8 used by
-  `zcdp_exponential_eps`. See https://arxiv.org/abs/2510.25746.
+  `zcdp_exponential_nu`. See https://arxiv.org/abs/2510.25746.
 
   Args:
     nu: The bounded range parameter of the mechanism.
@@ -152,8 +152,8 @@ def gdp_bounded_range_nu(budget: float) -> float:
   return 2.0 * (scipy.special.log_ndtr(mu / 2.0) - scipy.special.log_ndtr(-mu / 2.0))
 
 
-def gdp_exponential_eps(budget: float) -> float:
-  """Return the exponential mechanism epsilon that satisfies sqrt(budget)-GDP."""
+def gdp_exponential_nu(budget: float) -> float:
+  """Return the exponential mechanism nu that satisfies sqrt(budget)-GDP."""
   return gdp_bounded_range_nu(budget)
 
 
