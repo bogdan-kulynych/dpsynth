@@ -25,7 +25,6 @@ from dpsynth import domain
 from dpsynth.local_mode import primitives
 from dpsynth.local_mode import vectorized_transformations as vtx
 import numpy as np
-import scipy.stats
 
 
 def encode_to_grid(values, lower, upper, delta, attribute=None, **_):
@@ -259,7 +258,9 @@ class NumericalInitializer(api.CalibratedMechanism):
       bin_counts = in_domain_counts
     else:
       bin_counts = np.r_[ood_count, in_domain_counts]
-    noisy = primitives.add_gaussian_noise(rng, bin_counts, self.sigma)
+    noisy = primitives.gaussian_mechanism(
+        rng, bin_counts, sigma=self.sigma, l2_sensitivity=1.0
+    )
     return dataclasses.replace(
         cm, noisy_counts=np.asarray(noisy), stddev=self.sigma
     )
@@ -327,7 +328,9 @@ class CategoricalInitializer(api.CalibratedMechanism):
       self, rng: np.random.Generator, counts: np.ndarray
   ) -> CategoricalMeasurement:
     """Returns a CategoricalMeasurement from pre-aggregated counts."""
-    noisy = primitives.add_gaussian_noise(rng, counts, self.sigma)
+    noisy = primitives.gaussian_mechanism(
+        rng, counts, sigma=self.sigma, l2_sensitivity=1.0
+    )
     return CategoricalMeasurement(
         self.attribute, noisy_counts=np.asarray(noisy), stddev=self.sigma
     )
@@ -381,21 +384,15 @@ class OpenSetInitializer(api.CalibratedMechanism):
       counts: np.ndarray,
   ) -> OpenSetMeasurement:
     """Returns an OpenSetMeasurement from pre-aggregated value counts."""
-    above_min = counts >= self.config.min_count
-    eligible_idx = np.where(above_min)[0]
-    eligible_counts = counts[above_min].astype(float)
-
-    noisy = primitives.add_gaussian_noise(rng, eligible_counts, self.sigma)
-    noisy_counts = np.asarray(noisy)
-
-    stddev = self.sigma
-    base = float(self.config.min_count)
-    threshold = base + stddev * scipy.stats.norm.ppf(1.0 - self.delta)
-    passed = noisy_counts >= threshold
-
-    selected_partitions = eligible_idx[passed]
-    estimated_counts = noisy_counts[passed]
-
+    selected_partitions, estimated_counts = primitives.gaussian_thresholding(
+        rng,
+        counts,
+        sigma=self.sigma,
+        delta=self.delta,
+        l2_sensitivity=1.0,
+        linf_sensitivity=1.0,
+        min_count=self.config.min_count,
+    )
     selected_values = np.array(
         [str(v) for v in unique_values[selected_partitions]]
     )
@@ -406,7 +403,7 @@ class OpenSetInitializer(api.CalibratedMechanism):
           rng,
           selected_values,
           estimated_counts,
-          stddev,
+          self.sigma,
           pub,
       )
 
@@ -415,5 +412,5 @@ class OpenSetInitializer(api.CalibratedMechanism):
     cat_attr = domain.CategoricalAttribute(possible_values)
 
     return OpenSetMeasurement(
-        cat_attr, noisy_counts=estimated_counts, stddev=stddev
+        cat_attr, noisy_counts=estimated_counts, stddev=self.sigma
     )
