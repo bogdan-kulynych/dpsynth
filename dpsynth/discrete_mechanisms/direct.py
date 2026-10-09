@@ -35,6 +35,7 @@ class DirectConfig(api.MechanismConfig):
         gdp_budget=accounting.zcdp_to_gdp(budget),
     )
 
+  estimator: mbi.Estimator = mbi.estimation.MirrorDescent()
   marginal_oracle: mbi.MarginalOracle | None = None
   pgm_iters: int = 5000
   prespecified_marginal_queries: list[tuple[str, ...]] = dataclasses.field(
@@ -79,7 +80,9 @@ class Direct(api.CalibratedMechanism):
     logging.info('[%s]:\n%s', type(self).__name__, summary)
 
     # Kick off async AOT compilation of the estimator while we measure.
-    estimator = mbi.estimation.MirrorDescent(self.config.marginal_oracle)
+    estimator = self.config.estimator
+    oracle = estimator.marginal_oracle or self.config.marginal_oracle
+    estimator = dataclasses.replace(estimator, marginal_oracle=oracle)
     pgm_future = estimator.precompile(
         data.domain,
         list(initial_measurements),

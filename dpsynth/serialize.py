@@ -27,6 +27,7 @@ from dpsynth import domain
 from dpsynth import reporting
 from dpsynth.relational import domain as relational_domain
 from etils import epath
+import mbi
 import yaml
 
 PathType = epath.PathLike
@@ -48,6 +49,10 @@ def _resolve_type(type_name: str) -> type[Any] | None:
     if isinstance(candidate, type) and issubclass(
         candidate, dp_accounting.DpEvent
     ):
+      return candidate
+  if hasattr(mbi.estimation, type_name):
+    candidate = getattr(mbi.estimation, type_name)
+    if isinstance(candidate, type) and issubclass(candidate, mbi.Estimator):
       return candidate
   return None
 
@@ -91,6 +96,10 @@ def _make_converter() -> cattrs.Converter:
       lambda cl: _unstructure_dataclass(cl, conv),
   )
   conv.register_unstructure_hook(
+      mbi.Estimator,
+      lambda obj: _unstructure_dataclass(obj.__class__, conv)(obj),
+  )
+  conv.register_unstructure_hook(
       tuple,
       lambda val: [conv.unstructure(x) for x in val],
   )
@@ -105,6 +114,10 @@ def _make_converter() -> cattrs.Converter:
   )
   conv.register_structure_hook(
       dp_accounting.DpEvent,
+      lambda data, _: _structure_polymorphic(data, _, conv),
+  )
+  conv.register_structure_hook(
+      mbi.Estimator,
       lambda data, _: _structure_polymorphic(data, _, conv),
   )
 
