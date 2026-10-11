@@ -81,7 +81,7 @@ def _worst_approximated(
   )  # if all weights are 0, could be a problem
   keys, values = list(errors.keys()), np.array(list(errors.values()))
   idx = primitives.exponential_mechanism(
-      rng, values, epsilon=eps, sensitivity=max_sensitivity, monotonic=False
+      rng, values, epsilon=nu, sensitivity=max_sensitivity, monotonic=False
   )
   return keys[idx]
 
